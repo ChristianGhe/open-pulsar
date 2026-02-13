@@ -250,6 +250,47 @@ get_task_field() {
     jq -r --argjson idx "$task_index" --arg field "$field" '.tasks[$idx][$field]' "$STATE_FILE"
 }
 
+ensure_jj() {
+    if command -v jj &>/dev/null; then
+        if ! jj root &>/dev/null 2>&1; then
+            echo "Initializing Jujutsu..."
+            if [[ -d ".git" ]]; then
+                jj git init --colocate 2>&1
+            else
+                jj init 2>&1
+            fi
+            echo "Jujutsu initialized."
+        fi
+        JJ_AVAILABLE=true
+    else
+        echo "Warning: jj not installed. Running without version control isolation." >&2
+        echo "Install jj for per-task revertability: https://jj-vcs.github.io/jj/latest/install-and-setup/" >&2
+        JJ_AVAILABLE=false
+    fi
+}
+
+jj_new_change() {
+    local message="$1"
+    if ! $JJ_AVAILABLE; then
+        echo ""
+        return
+    fi
+
+    local output
+    output=$(jj new -m "$message" 2>&1)
+    # Extract the change ID from jj output
+    local change_id
+    change_id=$(jj log -r @ --no-graph -T 'change_id.short()' 2>/dev/null || echo "unknown")
+    echo "$change_id"
+}
+
+jj_abandon_change() {
+    local change_id="$1"
+    if $JJ_AVAILABLE && [[ -n "$change_id" && "$change_id" != "null" ]]; then
+        jj abandon "$change_id" 2>/dev/null || true
+    fi
+}
+
 parse_args() {
     local task_file=""
 
@@ -320,7 +361,8 @@ main() {
     fi
 
     init_state
-    echo "Parsed $TOTAL_TASKS tasks from $TASK_FILE"
+    ensure_jj
+    echo "Ready to execute $TOTAL_TASKS tasks from $TASK_FILE"
 }
 
 main "$@"
