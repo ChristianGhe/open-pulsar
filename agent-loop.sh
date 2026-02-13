@@ -32,22 +32,80 @@ Options:
 USAGE
 }
 
+reset_state() {
+    echo "Resetting state..."
+    rm -rf "$STATE_DIR"
+    echo "State cleared."
+}
+
+show_status() {
+    echo "Status: not yet implemented"
+}
+
 parse_args() {
+    local task_file=""
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --help) usage; exit 0 ;;
-            --version) echo "agent-loop $VERSION"; exit 0 ;;
-            --model) MODEL="$2"; shift 2 ;;
-            --dry-run) DRY_RUN=true; shift ;;
-            --reset) RESET=true; shift ;;
-            --status) STATUS=true; shift ;;
-            *) TASK_FILE="$1"; shift ;;
+            --model)
+                MODEL="$2"
+                shift 2
+                ;;
+            --dry-run)
+                DRY_RUN=true
+                shift
+                ;;
+            --reset)
+                reset_state
+                exit 0
+                ;;
+            --status)
+                show_status
+                exit 0
+                ;;
+            --help)
+                usage
+                exit 0
+                ;;
+            --version)
+                echo "agent-loop $VERSION"
+                exit 0
+                ;;
+            -*)
+                echo "Error: Unknown option $1" >&2
+                usage >&2
+                exit 1
+                ;;
+            *)
+                if [[ -n "$task_file" ]]; then
+                    echo "Error: Multiple task files specified" >&2
+                    exit 1
+                fi
+                task_file="$1"
+                shift
+                ;;
         esac
     done
+
+    if [[ -z "$task_file" ]]; then
+        echo "Error: No task file specified" >&2
+        usage >&2
+        exit 1
+    fi
+
+    if [[ ! -f "$task_file" ]]; then
+        echo "Error: Task file not found: $task_file" >&2
+        exit 1
+    fi
+
+    TASK_FILE="$task_file"
 }
 
 main() {
     parse_args "$@"
+    echo "Task file: $TASK_FILE"
+    echo "Model: $MODEL"
+    echo "Dry run: $DRY_RUN"
 }
 
 main "$@"
