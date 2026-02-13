@@ -270,12 +270,12 @@ get_task_field() {
 
 ensure_jj() {
     if command -v jj &>/dev/null; then
-        if ! jj root &>/dev/null 2>&1; then
-            echo "Initializing Jujutsu..."
-            if [[ -d ".git" ]]; then
-                jj git init --colocate 2>&1
+        if ! (cd "$TARGET_DIR" && jj root &>/dev/null 2>&1); then
+            echo "Initializing Jujutsu in $TARGET_DIR..."
+            if [[ -d "$TARGET_DIR/.git" ]]; then
+                (cd "$TARGET_DIR" && jj git init --colocate 2>&1)
             else
-                jj init 2>&1
+                (cd "$TARGET_DIR" && jj init 2>&1)
             fi
             echo "Jujutsu initialized."
         fi
@@ -295,17 +295,16 @@ jj_new_change() {
     fi
 
     local output
-    output=$(jj new -m "$message" 2>&1)
-    # Extract the change ID from jj output
+    output=$(cd "$TARGET_DIR" && jj new -m "$message" 2>&1)
     local change_id
-    change_id=$(jj log -r @ --no-graph -T 'change_id.short()' 2>/dev/null || echo "unknown")
+    change_id=$(cd "$TARGET_DIR" && jj log -r @ --no-graph -T 'change_id.short()' 2>/dev/null || echo "unknown")
     echo "$change_id"
 }
 
 jj_abandon_change() {
     local change_id="$1"
     if $JJ_AVAILABLE && [[ -n "$change_id" && "$change_id" != "null" ]]; then
-        jj abandon "$change_id" 2>/dev/null || true
+        (cd "$TARGET_DIR" && jj abandon "$change_id" 2>/dev/null) || true
     fi
 }
 
