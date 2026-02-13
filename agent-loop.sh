@@ -337,7 +337,7 @@ IMPORTANT HINT FROM PREVIOUS ATTEMPT: $hint"
     # Run claude, capture output
     local output
     local exit_code=0
-    output=$(CLAUDECODE= claude "${claude_args[@]}" "$prompt" 2>&1) || exit_code=$?
+    output=$(cd "$TARGET_DIR" && CLAUDECODE= claude "${claude_args[@]}" "$prompt" 2>&1) || exit_code=$?
 
     # Save raw output to log
     echo "$output" > "$LOG_DIR/$log_file"
