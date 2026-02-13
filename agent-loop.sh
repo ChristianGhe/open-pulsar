@@ -291,6 +291,236 @@ jj_abandon_change() {
     fi
 }
 
+run_claude() {
+    local task_text="$1"
+    local session_id="$2"  # empty string for new session
+    local log_file="$3"
+    local hint="$4"        # optional hint from retry analysis
+
+    local prompt="$task_text"
+    if [[ -n "$hint" ]]; then
+        prompt="$task_text
+
+IMPORTANT HINT FROM PREVIOUS ATTEMPT: $hint"
+    fi
+
+    local claude_args=(
+        -p
+        --dangerously-skip-permissions
+        --model "$MODEL"
+        --output-format json
+    )
+
+    if [[ -n "$session_id" ]]; then
+        claude_args+=(--resume "$session_id")
+    else
+        claude_args+=(--system-prompt "$SYSTEM_PROMPT")
+    fi
+
+    # Run claude, capture output
+    local output
+    local exit_code=0
+    output=$(CLAUDECODE= claude "${claude_args[@]}" "$prompt" 2>&1) || exit_code=$?
+
+    # Save raw output to log
+    echo "$output" > "$LOG_DIR/$log_file"
+
+    if [[ $exit_code -ne 0 ]]; then
+        echo ""
+        return 1
+    fi
+
+    # Extract session_id from JSON output
+    local new_session_id
+    new_session_id=$(echo "$output" | jq -r '.session_id // empty' 2>/dev/null || echo "")
+    echo "$new_session_id"
+    return 0
+}
+
+analyze_failure() {
+    local task_text="$1"
+    local log_file="$2"
+
+    local error_output
+    error_output=$(tail -c 2000 "$LOG_DIR/$log_file" 2>/dev/null || echo "No output captured")
+
+    local analysis_prompt="A task failed during autonomous execution. Analyze the error and decide if retrying would help.
+
+TASK: $task_text
+
+ERROR OUTPUT (last 2000 chars):
+$error_output
+
+Respond with ONLY valid JSON, no other text:
+{\"retry\": true or false, \"reason\": \"brief explanation\", \"hint\": \"specific suggestion for next attempt or empty string\"}"
+
+    local result
+    result=$(CLAUDECODE= claude -p \
+        --model haiku \
+        --dangerously-skip-permissions \
+        --output-format json \
+        "$analysis_prompt" 2>/dev/null) || true
+
+    # Extract the result text and parse the inner JSON
+    local inner
+    inner=$(echo "$result" | jq -r '.result // empty' 2>/dev/null || echo "")
+
+    if [[ -z "$inner" ]]; then
+        echo '{"retry": false, "reason": "Could not analyze failure", "hint": ""}'
+        return
+    fi
+
+    # Try to parse the inner JSON; fall back to no-retry
+    if echo "$inner" | jq . &>/dev/null 2>&1; then
+        echo "$inner"
+    else
+        echo '{"retry": false, "reason": "Could not parse analysis", "hint": ""}'
+    fi
+}
+
+execute_tasks() {
+    local current_group=""
+    local session_id=""
+    local interrupted=false
+
+    trap 'interrupted=true; echo ""; echo "Interrupted. Progress saved."; exit 130' INT TERM
+
+    for i in $(seq 0 $((TOTAL_TASKS - 1))); do
+        if $interrupted; then
+            break
+        fi
+
+        local group="${TASK_GROUPS[$i]}"
+        local task="${TASK_TEXTS[$i]}"
+        local status
+        status=$(get_task_status "$i")
+
+        # Skip completed/failed tasks
+        if [[ "$status" == "completed" || "$status" == "failed" ]]; then
+            continue
+        fi
+
+        # New group = new session
+        if [[ "$group" != "$current_group" ]]; then
+            current_group="$group"
+            session_id=""
+        fi
+
+        local log_name
+        log_name=$(get_task_field "$i" "log")
+
+        echo ""
+        echo "[$((i + 1))/$TOTAL_TASKS] $group > $task"
+
+        # Create jj change
+        local jj_change=""
+        jj_change=$(jj_new_change "agent-loop: $group / $task")
+        if [[ -n "$jj_change" ]]; then
+            echo "  jj: created change $jj_change"
+            update_task_state "$i" "jj_change" "$jj_change"
+        fi
+
+        update_task_state "$i" "status" "running"
+
+        # Attempt loop
+        local attempt=0
+        local success=false
+        local hint=""
+
+        while [[ $attempt -lt $MAX_ATTEMPTS ]]; do
+            ((attempt++)) || true
+
+            if [[ $attempt -gt 1 ]]; then
+                echo "  retry: attempt $attempt/$MAX_ATTEMPTS"
+                # Abandon previous jj change and create new one
+                jj_abandon_change "$jj_change"
+                jj_change=$(jj_new_change "agent-loop: $group / $task (attempt $attempt)")
+                if [[ -n "$jj_change" ]]; then
+                    update_task_state "$i" "jj_change" "$jj_change"
+                fi
+                # Use fresh session for retries
+                session_id=""
+            fi
+
+            echo "  claude: running... (output -> $LOG_DIR/$log_name)"
+
+            local new_session_id
+            new_session_id=$(run_claude "$task" "$session_id" "$log_name" "$hint")
+            local run_exit=$?
+
+            if [[ $run_exit -eq 0 && -n "$new_session_id" ]]; then
+                session_id="$new_session_id"
+                update_task_state "$i" "status" "completed"
+                update_task_state "$i" "session_id" "$session_id"
+                update_task_state_raw "$i" "attempts" "$attempt"
+                echo "  completed (session $session_id)"
+                success=true
+                break
+            fi
+
+            echo "  failed on attempt $attempt"
+
+            # AI-driven retry analysis
+            if [[ $attempt -lt $MAX_ATTEMPTS ]]; then
+                echo "  analyzing failure..."
+                local analysis
+                analysis=$(analyze_failure "$task" "$log_name")
+                local should_retry
+                should_retry=$(echo "$analysis" | jq -r '.retry' 2>/dev/null || echo "false")
+                local reason
+                reason=$(echo "$analysis" | jq -r '.reason' 2>/dev/null || echo "")
+                hint=$(echo "$analysis" | jq -r '.hint' 2>/dev/null || echo "")
+
+                echo "  analysis: $reason"
+
+                if [[ "$should_retry" != "true" ]]; then
+                    echo "  AI decided not to retry. Moving on."
+                    break
+                fi
+
+                echo "  AI suggests retry with hint: $hint"
+            fi
+        done
+
+        if ! $success; then
+            update_task_state "$i" "status" "failed"
+            update_task_state_raw "$i" "attempts" "$attempt"
+            jj_abandon_change "$jj_change"
+            echo "  FAILED after $attempt attempt(s). jj change abandoned."
+            # Break session chain
+            session_id=""
+        fi
+    done
+}
+
+show_summary() {
+    echo ""
+    echo "========================================="
+    echo "  Execution Summary"
+    echo "========================================="
+
+    local completed failed pending
+    completed=$(jq '[.tasks[] | select(.status == "completed")] | length' "$STATE_FILE")
+    failed=$(jq '[.tasks[] | select(.status == "failed")] | length' "$STATE_FILE")
+    pending=$(jq '[.tasks[] | select(.status == "pending")] | length' "$STATE_FILE")
+
+    echo "  Completed: $completed"
+    echo "  Failed:    $failed"
+    echo "  Pending:   $pending"
+    echo "  Total:     $TOTAL_TASKS"
+    echo ""
+
+    if [[ "$failed" -gt 0 ]]; then
+        echo "  Failed tasks:"
+        jq -r '.tasks[] | select(.status == "failed") | "    - \(.group) > \(.task)"' "$STATE_FILE"
+        echo ""
+    fi
+
+    echo "  Logs: $LOG_DIR/"
+    echo "  State: $STATE_FILE"
+    echo "========================================="
+}
+
 parse_args() {
     local task_file=""
 
@@ -362,7 +592,9 @@ main() {
 
     init_state
     ensure_jj
-    echo "Ready to execute $TOTAL_TASKS tasks from $TASK_FILE"
+    echo "Executing $TOTAL_TASKS tasks from $TASK_FILE (model: $MODEL)"
+    execute_tasks
+    show_summary
 }
 
 main "$@"
