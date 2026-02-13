@@ -4,11 +4,10 @@ set -euo pipefail
 VERSION="0.1.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_DIR=""
-STATE_DIR=".agent-loop"
-STATE_FILE="$STATE_DIR/state.json"
-LOG_DIR="$STATE_DIR/logs"
 MODEL="opus"
 DRY_RUN=false
+DO_RESET=false
+DO_STATUS=false
 MAX_ATTEMPTS=5
 
 # Colors (disabled if not a terminal)
@@ -566,12 +565,12 @@ parse_args() {
                 shift
                 ;;
             --reset)
-                reset_state
-                exit 0
+                DO_RESET=true
+                shift
                 ;;
             --status)
-                show_status
-                exit 0
+                DO_STATUS=true
+                shift
                 ;;
             --help)
                 usage
@@ -597,6 +596,10 @@ parse_args() {
         esac
     done
 
+    if $DO_RESET || $DO_STATUS; then
+        return
+    fi
+
     if [[ -z "$task_file" ]]; then
         echo "Error: No task file specified" >&2
         usage >&2
@@ -614,6 +617,23 @@ parse_args() {
 main() {
     show_banner
     parse_args "$@"
+
+    # Derive paths from TARGET_DIR
+    TARGET_DIR="${TARGET_DIR:-$(pwd)}"
+    STATE_DIR="$TARGET_DIR/.agent-loop"
+    STATE_FILE="$STATE_DIR/state.json"
+    LOG_DIR="$STATE_DIR/logs"
+
+    if $DO_RESET; then
+        reset_state
+        exit 0
+    fi
+
+    if $DO_STATUS; then
+        show_status
+        exit 0
+    fi
+
     check_dependencies
     parse_tasks "$TASK_FILE"
 
