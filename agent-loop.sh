@@ -3,6 +3,7 @@ set -euo pipefail
 
 VERSION="0.1.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TARGET_DIR=""
 STATE_DIR=".agent-loop"
 STATE_FILE="$STATE_DIR/state.json"
 LOG_DIR="$STATE_DIR/logs"
@@ -53,6 +54,7 @@ Execute tasks from a markdown file using Claude Code CLI.
 
 Options:
   --model <model>   Claude model to use (default: opus)
+  --dir <path>      Target directory for task execution (default: current dir)
   --dry-run         Parse and show tasks without executing
   --reset           Clear state file and start fresh
   --status          Show progress of current task file
@@ -549,6 +551,14 @@ parse_args() {
         case "$1" in
             --model)
                 MODEL="$2"
+                shift 2
+                ;;
+            --dir)
+                if [[ -z "${2:-}" || ! -d "$2" ]]; then
+                    echo "Error: --dir requires a valid directory path" >&2
+                    exit 1
+                fi
+                TARGET_DIR="$(cd "$2" && pwd)"
                 shift 2
                 ;;
             --dry-run)
