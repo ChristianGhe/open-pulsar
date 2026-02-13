@@ -16,6 +16,18 @@ Work in the current directory. Do not ask questions — make reasonable decision
 If a task is ambiguous, interpret it in the most useful way and execute.
 Commit nothing to git/jj — the outer loop handles version control.'
 
+check_dependencies() {
+    if ! command -v jq &>/dev/null; then
+        echo "Error: jq is required but not installed." >&2
+        echo "Install with: sudo apt install jq" >&2
+        exit 1
+    fi
+    if ! command -v claude &>/dev/null; then
+        echo "Error: claude CLI is required but not installed." >&2
+        exit 1
+    fi
+}
+
 usage() {
     cat <<'USAGE'
 Usage: agent-loop.sh [options] <tasks.md>
@@ -39,7 +51,23 @@ reset_state() {
 }
 
 show_status() {
-    echo "Status: not yet implemented"
+    if [[ ! -f "$STATE_FILE" ]]; then
+        echo "No active run found."
+        exit 0
+    fi
+
+    local task_file total completed failed pending
+    task_file=$(jq -r '.task_file' "$STATE_FILE")
+    total=$(jq '.tasks | length' "$STATE_FILE")
+    completed=$(jq '[.tasks[] | select(.status == "completed")] | length' "$STATE_FILE")
+    failed=$(jq '[.tasks[] | select(.status == "failed")] | length' "$STATE_FILE")
+    pending=$((total - completed - failed))
+
+    echo "Task file: $task_file"
+    echo "Progress: $completed/$total completed, $failed failed, $pending pending"
+    echo ""
+
+    jq -r '.tasks[] | "  [\(.status | if . == "completed" then "OK" elif . == "failed" then "FAIL" else "..." end)] \(.group) > \(.task)"' "$STATE_FILE"
 }
 
 # Globals populated by parse_tasks
@@ -123,6 +151,105 @@ show_parsed_tasks() {
     echo "Total: $TOTAL_TASKS tasks"
 }
 
+slugify() {
+    echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//'
+}
+
+init_state() {
+    mkdir -p "$LOG_DIR"
+
+    local file_hash
+    file_hash=$(sha256sum "$TASK_FILE" | cut -d' ' -f1)
+
+    if [[ -f "$STATE_FILE" ]]; then
+        local stored_hash
+        stored_hash=$(jq -r '.task_file_hash' "$STATE_FILE")
+        if [[ "$stored_hash" != "$file_hash" ]]; then
+            echo "Error: Task file has changed since last run." >&2
+            echo "Run with --reset to clear state and start fresh." >&2
+            exit 1
+        fi
+        return
+    fi
+
+    # Build initial state
+    local tasks_json="[]"
+    for i in $(seq 0 $((TOTAL_TASKS - 1))); do
+        local group="${TASK_GROUPS[$i]}"
+        local task="${TASK_TEXTS[$i]}"
+        local group_slug
+        group_slug=$(slugify "$group")
+        local task_slug
+        task_slug=$(slugify "$task" | cut -c1-50)
+        local log_name
+        log_name=$(printf "%03d-%s--%s.log" "$((i + 1))" "$group_slug" "$task_slug")
+
+        tasks_json=$(echo "$tasks_json" | jq \
+            --arg group "$group" \
+            --arg task "$task" \
+            --arg log "$log_name" \
+            --argjson index "$((i + 1))" \
+            '. += [{
+                index: $index,
+                group: $group,
+                task: $task,
+                status: "pending",
+                session_id: null,
+                jj_change: null,
+                log: $log,
+                attempts: 0
+            }]')
+    done
+
+    jq -n \
+        --arg task_file "$TASK_FILE" \
+        --arg hash "$file_hash" \
+        --arg started "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --argjson tasks "$tasks_json" \
+        '{
+            task_file: $task_file,
+            task_file_hash: $hash,
+            started_at: $started,
+            tasks: $tasks
+        }' > "$STATE_FILE"
+}
+
+update_task_state() {
+    local task_index="$1"  # 0-based
+    local field="$2"
+    local value="$3"
+
+    local tmp
+    tmp=$(mktemp)
+    jq --argjson idx "$task_index" --arg field "$field" --arg val "$value" \
+        '.tasks[$idx][$field] = $val' "$STATE_FILE" > "$tmp" \
+        && mv "$tmp" "$STATE_FILE"
+}
+
+update_task_state_raw() {
+    # For non-string values (numbers, null)
+    local task_index="$1"
+    local field="$2"
+    local value="$3"
+
+    local tmp
+    tmp=$(mktemp)
+    jq --argjson idx "$task_index" --arg field "$field" --argjson val "$value" \
+        '.tasks[$idx][$field] = $val' "$STATE_FILE" > "$tmp" \
+        && mv "$tmp" "$STATE_FILE"
+}
+
+get_task_status() {
+    local task_index="$1"  # 0-based
+    jq -r --argjson idx "$task_index" '.tasks[$idx].status' "$STATE_FILE"
+}
+
+get_task_field() {
+    local task_index="$1"  # 0-based
+    local field="$2"
+    jq -r --argjson idx "$task_index" --arg field "$field" '.tasks[$idx][$field]' "$STATE_FILE"
+}
+
 parse_args() {
     local task_file=""
 
@@ -184,6 +311,7 @@ parse_args() {
 
 main() {
     parse_args "$@"
+    check_dependencies
     parse_tasks "$TASK_FILE"
 
     if $DRY_RUN; then
@@ -191,6 +319,7 @@ main() {
         exit 0
     fi
 
+    init_state
     echo "Parsed $TOTAL_TASKS tasks from $TASK_FILE"
 }
 
