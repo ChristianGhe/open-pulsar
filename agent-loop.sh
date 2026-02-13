@@ -42,6 +42,9 @@ check_dependencies() {
 
 show_banner() {
     echo -e "${BOLD}agent-loop $VERSION${NC}"
+    if [[ -n "$TARGET_DIR" && "$TARGET_DIR" != "$(pwd)" ]]; then
+        echo -e "  ${BLUE}target:${NC} $TARGET_DIR"
+    fi
     echo ""
 }
 
@@ -539,6 +542,9 @@ show_summary() {
 
     echo "  Logs: $LOG_DIR/"
     echo "  State: $STATE_FILE"
+    if [[ "$TARGET_DIR" != "$(pwd)" ]]; then
+        echo "  Target: $TARGET_DIR"
+    fi
     echo "========================================="
 }
 
@@ -614,7 +620,6 @@ parse_args() {
 }
 
 main() {
-    show_banner
     parse_args "$@"
 
     # Derive paths from TARGET_DIR
@@ -622,6 +627,8 @@ main() {
     STATE_DIR="$TARGET_DIR/.agent-loop"
     STATE_FILE="$STATE_DIR/state.json"
     LOG_DIR="$STATE_DIR/logs"
+
+    show_banner
 
     if $DO_RESET; then
         reset_state
