@@ -13,6 +13,8 @@ You write tasks in a markdown file, organized into groups. agent-loop feeds them
 | claude CLI (Claude Code) | Yes | See [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code) |
 | jj (Jujutsu) | Recommended | See [jj install guide](https://jj-vcs.github.io/jj/latest/install-and-setup/) |
 
+> **macOS note:** agent-loop uses `sha256sum` for file integrity checks, which is not included in macOS by default. Install GNU coreutils: `brew install coreutils`.
+
 ## Installation
 
 ```bash
@@ -151,6 +153,9 @@ Usage: agent-loop.sh [options] <tasks.md>
 
 # Check progress mid-run (from another terminal)
 ./agent-loop.sh --status
+
+# Check progress when using --dir
+./agent-loop.sh --dir ~/projects/my-app --status
 
 # Start over after editing the task file
 ./agent-loop.sh --reset
