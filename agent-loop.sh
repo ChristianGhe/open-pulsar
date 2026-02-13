@@ -10,6 +10,18 @@ MODEL="opus"
 DRY_RUN=false
 MAX_ATTEMPTS=5
 
+# Colors (disabled if not a terminal)
+if [[ -t 1 ]]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'
+    BOLD='\033[1m'
+    NC='\033[0m'
+else
+    RED='' GREEN='' YELLOW='' BLUE='' BOLD='' NC=''
+fi
+
 SYSTEM_PROMPT='You are an autonomous agent executing tasks from a task list.
 Use ALL tools available to you to complete the task thoroughly.
 Work in the current directory. Do not ask questions — make reasonable decisions and proceed.
@@ -26,6 +38,11 @@ check_dependencies() {
         echo "Error: claude CLI is required but not installed." >&2
         exit 1
     fi
+}
+
+show_banner() {
+    echo -e "${BOLD}agent-loop $VERSION${NC}"
+    echo ""
 }
 
 usage() {
@@ -143,7 +160,7 @@ show_parsed_tasks() {
         if [[ "${TASK_GROUPS[$i]}" != "$current_group" ]]; then
             current_group="${TASK_GROUPS[$i]}"
             echo ""
-            echo "## $current_group"
+            echo -e "  ${BOLD}${BLUE}## $current_group${NC}"
         fi
         echo "  [$((i + 1))/$TOTAL_TASKS] ${TASK_TEXTS[$i]}"
     done
@@ -410,13 +427,13 @@ execute_tasks() {
         log_name=$(get_task_field "$i" "log")
 
         echo ""
-        echo "[$((i + 1))/$TOTAL_TASKS] $group > $task"
+        echo -e "${BOLD}${BLUE}[$((i + 1))/$TOTAL_TASKS] $group > $task${NC}"
 
         # Create jj change
         local jj_change=""
         jj_change=$(jj_new_change "agent-loop: $group / $task")
         if [[ -n "$jj_change" ]]; then
-            echo "  jj: created change $jj_change"
+            echo -e "  ${YELLOW}jj:${NC} created change $jj_change"
             update_task_state "$i" "jj_change" "$jj_change"
         fi
 
@@ -431,7 +448,7 @@ execute_tasks() {
             ((attempt++)) || true
 
             if [[ $attempt -gt 1 ]]; then
-                echo "  retry: attempt $attempt/$MAX_ATTEMPTS"
+                echo -e "  ${YELLOW}retry:${NC} attempt $attempt/$MAX_ATTEMPTS"
                 # Abandon previous jj change and create new one
                 jj_abandon_change "$jj_change"
                 jj_change=$(jj_new_change "agent-loop: $group / $task (attempt $attempt)")
@@ -442,7 +459,7 @@ execute_tasks() {
                 session_id=""
             fi
 
-            echo "  claude: running... (output -> $LOG_DIR/$log_name)"
+            echo -e "  ${BLUE}claude:${NC} running... (output -> $LOG_DIR/$log_name)"
 
             local new_session_id
             new_session_id=$(run_claude "$task" "$session_id" "$log_name" "$hint")
@@ -453,16 +470,16 @@ execute_tasks() {
                 update_task_state "$i" "status" "completed"
                 update_task_state "$i" "session_id" "$session_id"
                 update_task_state_raw "$i" "attempts" "$attempt"
-                echo "  completed (session $session_id)"
+                echo -e "  ${GREEN}completed${NC} (session $session_id)"
                 success=true
                 break
             fi
 
-            echo "  failed on attempt $attempt"
+            echo -e "  ${RED}failed${NC} on attempt $attempt"
 
             # AI-driven retry analysis
             if [[ $attempt -lt $MAX_ATTEMPTS ]]; then
-                echo "  analyzing failure..."
+                echo -e "  ${YELLOW}analyzing failure...${NC}"
                 local analysis
                 analysis=$(analyze_failure "$task" "$log_name")
                 local should_retry
@@ -474,7 +491,7 @@ execute_tasks() {
                 echo "  analysis: $reason"
 
                 if [[ "$should_retry" != "true" ]]; then
-                    echo "  AI decided not to retry. Moving on."
+                    echo -e "  ${YELLOW}AI decided not to retry. Moving on.${NC}"
                     break
                 fi
 
@@ -486,7 +503,7 @@ execute_tasks() {
             update_task_state "$i" "status" "failed"
             update_task_state_raw "$i" "attempts" "$attempt"
             jj_abandon_change "$jj_change"
-            echo "  FAILED after $attempt attempt(s). jj change abandoned."
+            echo -e "  ${RED}FAILED after $attempt attempt(s). jj change abandoned.${NC}"
             # Break session chain
             session_id=""
         fi
@@ -496,7 +513,7 @@ execute_tasks() {
 show_summary() {
     echo ""
     echo "========================================="
-    echo "  Execution Summary"
+    echo -e "${BOLD}  Execution Summary${NC}"
     echo "========================================="
 
     local completed failed pending
@@ -504,8 +521,12 @@ show_summary() {
     failed=$(jq '[.tasks[] | select(.status == "failed")] | length' "$STATE_FILE")
     pending=$(jq '[.tasks[] | select(.status == "pending")] | length' "$STATE_FILE")
 
-    echo "  Completed: $completed"
-    echo "  Failed:    $failed"
+    echo -e "  Completed: ${GREEN}$completed${NC}"
+    if [[ "$failed" -gt 0 ]]; then
+        echo -e "  Failed:    ${RED}$failed${NC}"
+    else
+        echo "  Failed:    $failed"
+    fi
     echo "  Pending:   $pending"
     echo "  Total:     $TOTAL_TASKS"
     echo ""
@@ -581,6 +602,7 @@ parse_args() {
 }
 
 main() {
+    show_banner
     parse_args "$@"
     check_dependencies
     parse_tasks "$TASK_FILE"
