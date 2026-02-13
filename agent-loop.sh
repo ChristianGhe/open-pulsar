@@ -42,6 +42,87 @@ show_status() {
     echo "Status: not yet implemented"
 }
 
+# Globals populated by parse_tasks
+declare -a TASK_GROUPS=()     # group name for each task
+declare -a TASK_TEXTS=()      # task text for each task
+TOTAL_TASKS=0
+
+parse_tasks() {
+    local file="$1"
+    local current_group="ungrouped"
+    local in_multiline=false
+    local current_task=""
+
+    TASK_GROUPS=()
+    TASK_TEXTS=()
+    TOTAL_TASKS=0
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Group heading
+        if [[ "$line" =~ ^##[[:space:]]+(.+)$ ]]; then
+            # Flush any pending multiline task
+            if [[ -n "$current_task" ]]; then
+                TASK_GROUPS+=("$current_group")
+                TASK_TEXTS+=("$current_task")
+                ((TOTAL_TASKS++)) || true
+                current_task=""
+            fi
+            current_group="${BASH_REMATCH[1]}"
+            in_multiline=false
+            continue
+        fi
+
+        # Task line (starts with -)
+        if [[ "$line" =~ ^-[[:space:]]+(.+)$ ]]; then
+            # Flush previous task if any
+            if [[ -n "$current_task" ]]; then
+                TASK_GROUPS+=("$current_group")
+                TASK_TEXTS+=("$current_task")
+                ((TOTAL_TASKS++)) || true
+            fi
+            current_task="${BASH_REMATCH[1]}"
+            in_multiline=true
+            continue
+        fi
+
+        # Continuation line (indented, part of multiline task)
+        if $in_multiline && [[ "$line" =~ ^[[:space:]]+(.+)$ ]]; then
+            current_task+=" ${BASH_REMATCH[1]}"
+            continue
+        fi
+
+        # Blank or other line ends multiline
+        if $in_multiline && [[ -n "$current_task" ]]; then
+            TASK_GROUPS+=("$current_group")
+            TASK_TEXTS+=("$current_task")
+            ((TOTAL_TASKS++)) || true
+            current_task=""
+            in_multiline=false
+        fi
+    done < "$file"
+
+    # Flush final task
+    if [[ -n "$current_task" ]]; then
+        TASK_GROUPS+=("$current_group")
+        TASK_TEXTS+=("$current_task")
+        ((TOTAL_TASKS++)) || true
+    fi
+}
+
+show_parsed_tasks() {
+    local current_group=""
+    for i in $(seq 0 $((TOTAL_TASKS - 1))); do
+        if [[ "${TASK_GROUPS[$i]}" != "$current_group" ]]; then
+            current_group="${TASK_GROUPS[$i]}"
+            echo ""
+            echo "## $current_group"
+        fi
+        echo "  [$((i + 1))/$TOTAL_TASKS] ${TASK_TEXTS[$i]}"
+    done
+    echo ""
+    echo "Total: $TOTAL_TASKS tasks"
+}
+
 parse_args() {
     local task_file=""
 
@@ -103,9 +184,14 @@ parse_args() {
 
 main() {
     parse_args "$@"
-    echo "Task file: $TASK_FILE"
-    echo "Model: $MODEL"
-    echo "Dry run: $DRY_RUN"
+    parse_tasks "$TASK_FILE"
+
+    if $DRY_RUN; then
+        show_parsed_tasks
+        exit 0
+    fi
+
+    echo "Parsed $TOTAL_TASKS tasks from $TASK_FILE"
 }
 
 main "$@"
