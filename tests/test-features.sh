@@ -167,6 +167,57 @@ assert_fail "--fallback-model without value" "$AGENT_LOOP" --fallback-model
 output=$("$AGENT_LOOP" --model opus --fallback-model sonnet --dry-run "$SCRIPT_DIR/minimal-tasks.md" 2>&1)
 assert_contains "dry-run with fallback shows model" "$output" "opus"
 
+# ============================================================
+echo "=== Interrupt resume tests ==="
+
+# Test: 'interrupted' status is recognized in --status output
+INT_DIR=$(mktemp -d)
+mkdir -p "$INT_DIR/.agent-loop/logs"
+TASK_MD="$INT_DIR/tasks.md"
+cat > "$TASK_MD" <<'MD'
+## Test
+- Say hello
+- Say goodbye
+MD
+HASH=$(sha256sum "$TASK_MD" | cut -d' ' -f1)
+cat > "$INT_DIR/.agent-loop/state.json" <<STATEJSON
+{
+  "task_file": "$TASK_MD",
+  "task_file_hash": "$HASH",
+  "started_at": "2026-01-01T00:00:00Z",
+  "tasks": [
+    {
+      "index": 1,
+      "group": "Test",
+      "task": "Say hello",
+      "status": "interrupted",
+      "session_id": null,
+      "jj_change": null,
+      "log": "001-test--say-hello.log",
+      "attempts": 0,
+      "interrupted_at": "2026-01-01T00:01:00Z",
+      "partial_context": "I was about to create the file..."
+    },
+    {
+      "index": 2,
+      "group": "Test",
+      "task": "Say goodbye",
+      "status": "pending",
+      "session_id": null,
+      "jj_change": null,
+      "log": "002-test--say-goodbye.log",
+      "attempts": 0
+    }
+  ]
+}
+STATEJSON
+
+# Test: --status shows interrupted task as INT
+output=$("$AGENT_LOOP" --dir "$INT_DIR" --status 2>&1)
+assert_contains "status shows interrupted task" "$output" "INT"
+
+rm -rf "$INT_DIR"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

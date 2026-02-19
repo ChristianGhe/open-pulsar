@@ -10,6 +10,8 @@ DRY_RUN=false
 DO_RESET=false
 DO_STATUS=false
 MAX_ATTEMPTS=5
+_current_task_index=-1
+_current_log_name=""
 
 # Colors (disabled if not a terminal)
 if [[ -t 1 ]]; then
@@ -134,7 +136,7 @@ show_status() {
     echo "Progress: $completed/$total completed, $failed failed, $pending pending"
     echo ""
 
-    jq -r '.tasks[] | "  [\(.status | if . == "completed" then "OK" elif . == "failed" then "FAIL" else "..." end)] \(.group) > \(.task)"' "$STATE_FILE"
+    jq -r '.tasks[] | "  [\(.status | if . == "completed" then "OK" elif . == "failed" then "FAIL" elif . == "interrupted" then "INT" else "..." end)] \(.group) > \(.task)"' "$STATE_FILE"
 }
 
 # Globals populated by parse_tasks
@@ -467,24 +469,46 @@ Respond with ONLY valid JSON, no other text:
     fi
 }
 
+_handle_interrupt() {
+    echo ""
+    echo "Interrupted. Saving context..."
+
+    if [[ $_current_task_index -ge 0 ]]; then
+        local partial=""
+        local log_path="$LOG_DIR/$_current_log_name"
+        if [[ -f "$log_path" ]]; then
+            partial=$(tail -c 500 "$log_path" 2>/dev/null || echo "")
+        fi
+
+        # Abandon jj change for interrupted task
+        local jj_change
+        jj_change=$(get_task_field "$_current_task_index" "jj_change")
+        jj_abandon_change "$jj_change"
+
+        update_task_state "$_current_task_index" "status" "interrupted"
+        update_task_state "$_current_task_index" "interrupted_at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        if [[ -n "$partial" ]]; then
+            update_task_state "$_current_task_index" "partial_context" "$partial"
+        fi
+    fi
+
+    echo "Progress saved. Resume by re-running the same command."
+    exit 130
+}
+
 execute_tasks() {
     local current_group=""
     local session_id=""
-    local interrupted=false
-
-    trap 'interrupted=true; echo ""; echo "Interrupted. Progress saved."' INT TERM
+    trap '_handle_interrupt' INT TERM
 
     for i in $(seq 0 $((TOTAL_TASKS - 1))); do
-        if $interrupted; then
-            break
-        fi
 
         local group="${TASK_GROUPS[$i]}"
         local task="${TASK_TEXTS[$i]}"
         local status
         status=$(get_task_status "$i")
 
-        # Skip completed/failed tasks
+        # Skip completed/failed tasks (interrupted tasks are re-attempted)
         if [[ "$status" == "completed" || "$status" == "failed" ]]; then
             continue
         fi
@@ -497,6 +521,21 @@ execute_tasks() {
 
         local log_name
         log_name=$(get_task_field "$i" "log")
+        _current_task_index=$i
+        _current_log_name="$log_name"
+
+        local hint=""
+
+        # If resuming an interrupted task, inject partial context as hint
+        if [[ "$status" == "interrupted" ]]; then
+            local partial
+            partial=$(get_task_field "$i" "partial_context")
+            if [[ -n "$partial" && "$partial" != "null" ]]; then
+                hint="CONTEXT FROM INTERRUPTED ATTEMPT: $partial"
+            fi
+            # Reset attempts for interrupted tasks
+            update_task_state "$i" "attempts" "0" raw
+        fi
 
         echo ""
         echo -e "${BOLD}${BLUE}[$((i + 1))/$TOTAL_TASKS] $group > $task${NC}"
@@ -514,7 +553,6 @@ execute_tasks() {
         # Attempt loop
         local attempt=0
         local success=false
-        local hint=""
 
         while [[ $attempt -lt $MAX_ATTEMPTS ]]; do
             attempt=$((attempt + 1))
@@ -623,11 +661,9 @@ execute_tasks() {
             # Break session chain
             session_id=""
         fi
-    done
 
-    if $interrupted; then
-        exit 130
-    fi
+        _current_task_index=-1
+    done
 }
 
 show_summary() {
