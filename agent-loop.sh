@@ -2,7 +2,6 @@
 set -euo pipefail
 
 VERSION="0.1.0"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_DIR=""
 MODEL="opus"
 DRY_RUN=false
@@ -96,6 +95,18 @@ declare -a TASK_GROUPS=()     # group name for each task
 declare -a TASK_TEXTS=()      # task text for each task
 TOTAL_TASKS=0
 
+flush_task() {
+    # Flushes the current task into the global arrays.
+    # Accesses caller's locals (current_task, current_group, in_multiline) via bash dynamic scoping.
+    if [[ -n "$current_task" ]]; then
+        TASK_GROUPS+=("$current_group")
+        TASK_TEXTS+=("$current_task")
+        TOTAL_TASKS=$((TOTAL_TASKS + 1))
+        current_task=""
+        in_multiline=false
+    fi
+}
+
 parse_tasks() {
     local file="$1"
     local current_group="ungrouped"
@@ -109,26 +120,14 @@ parse_tasks() {
     while IFS= read -r line || [[ -n "$line" ]]; do
         # Group heading
         if [[ "$line" =~ ^##[[:space:]]+(.+)$ ]]; then
-            # Flush any pending multiline task
-            if [[ -n "$current_task" ]]; then
-                TASK_GROUPS+=("$current_group")
-                TASK_TEXTS+=("$current_task")
-                ((TOTAL_TASKS++)) || true
-                current_task=""
-            fi
+            flush_task
             current_group="${BASH_REMATCH[1]}"
-            in_multiline=false
             continue
         fi
 
         # Task line (starts with -)
         if [[ "$line" =~ ^-[[:space:]]+(.+)$ ]]; then
-            # Flush previous task if any
-            if [[ -n "$current_task" ]]; then
-                TASK_GROUPS+=("$current_group")
-                TASK_TEXTS+=("$current_task")
-                ((TOTAL_TASKS++)) || true
-            fi
+            flush_task
             current_task="${BASH_REMATCH[1]}"
             in_multiline=true
             continue
@@ -141,21 +140,12 @@ parse_tasks() {
         fi
 
         # Blank or other line ends multiline
-        if $in_multiline && [[ -n "$current_task" ]]; then
-            TASK_GROUPS+=("$current_group")
-            TASK_TEXTS+=("$current_task")
-            ((TOTAL_TASKS++)) || true
-            current_task=""
-            in_multiline=false
+        if $in_multiline; then
+            flush_task
         fi
     done < "$file"
 
-    # Flush final task
-    if [[ -n "$current_task" ]]; then
-        TASK_GROUPS+=("$current_group")
-        TASK_TEXTS+=("$current_task")
-        ((TOTAL_TASKS++)) || true
-    fi
+    flush_task
 }
 
 show_parsed_tasks() {
@@ -239,23 +229,14 @@ update_task_state() {
     local task_index="$1"  # 0-based
     local field="$2"
     local value="$3"
+    local raw="${4:-}"      # pass "raw" for non-string values (numbers, null)
+
+    local val_flag="--arg"
+    [[ -n "$raw" ]] && val_flag="--argjson"
 
     local tmp
     tmp=$(mktemp)
-    jq --argjson idx "$task_index" --arg field "$field" --arg val "$value" \
-        '.tasks[$idx][$field] = $val' "$STATE_FILE" > "$tmp" \
-        && mv "$tmp" "$STATE_FILE"
-}
-
-update_task_state_raw() {
-    # For non-string values (numbers, null)
-    local task_index="$1"
-    local field="$2"
-    local value="$3"
-
-    local tmp
-    tmp=$(mktemp)
-    jq --argjson idx "$task_index" --arg field "$field" --argjson val "$value" \
+    jq --argjson idx "$task_index" --arg field "$field" $val_flag val "$value" \
         '.tasks[$idx][$field] = $val' "$STATE_FILE" > "$tmp" \
         && mv "$tmp" "$STATE_FILE"
 }
@@ -278,7 +259,7 @@ ensure_jj() {
             if [[ -d "$TARGET_DIR/.git" ]]; then
                 (cd "$TARGET_DIR" && jj git init --colocate 2>&1)
             else
-                (cd "$TARGET_DIR" && jj init 2>&1)
+                (cd "$TARGET_DIR" && jj git init 2>&1)
             fi
             echo "Jujutsu initialized."
         fi
@@ -403,7 +384,7 @@ execute_tasks() {
     local session_id=""
     local interrupted=false
 
-    trap 'interrupted=true; echo ""; echo "Interrupted. Progress saved."; exit 130' INT TERM
+    trap 'interrupted=true; echo ""; echo "Interrupted. Progress saved."' INT TERM
 
     for i in $(seq 0 $((TOTAL_TASKS - 1))); do
         if $interrupted; then
@@ -448,7 +429,7 @@ execute_tasks() {
         local hint=""
 
         while [[ $attempt -lt $MAX_ATTEMPTS ]]; do
-            ((attempt++)) || true
+            attempt=$((attempt + 1))
 
             if [[ $attempt -gt 1 ]]; then
                 echo -e "  ${YELLOW}retry:${NC} attempt $attempt/$MAX_ATTEMPTS"
@@ -472,7 +453,7 @@ execute_tasks() {
                 session_id="$new_session_id"
                 update_task_state "$i" "status" "completed"
                 update_task_state "$i" "session_id" "$session_id"
-                update_task_state_raw "$i" "attempts" "$attempt"
+                update_task_state "$i" "attempts" "$attempt" raw
                 echo -e "  ${GREEN}completed${NC} (session $session_id)"
                 success=true
                 break
@@ -504,13 +485,17 @@ execute_tasks() {
 
         if ! $success; then
             update_task_state "$i" "status" "failed"
-            update_task_state_raw "$i" "attempts" "$attempt"
+            update_task_state "$i" "attempts" "$attempt" raw
             jj_abandon_change "$jj_change"
             echo -e "  ${RED}FAILED after $attempt attempt(s). jj change abandoned.${NC}"
             # Break session chain
             session_id=""
         fi
     done
+
+    if $interrupted; then
+        exit 130
+    fi
 }
 
 show_summary() {
@@ -554,6 +539,10 @@ parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --model)
+                if [[ -z "${2:-}" ]]; then
+                    echo "Error: --model requires a model name" >&2
+                    exit 1
+                fi
                 MODEL="$2"
                 shift 2
                 ;;
