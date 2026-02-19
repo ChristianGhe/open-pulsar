@@ -59,9 +59,11 @@ assert_not_contains() {
 # ============================================================
 echo "=== Boot file tests ==="
 
-# Setup temp dir for boot file tests
-BOOT_DIR=$(mktemp -d)
-trap 'rm -rf "$BOOT_DIR"' EXIT
+# Setup temp dir for all tests
+TEST_TMP=$(mktemp -d)
+trap 'rm -rf "$TEST_TMP"' EXIT
+BOOT_DIR="$TEST_TMP/boot"
+mkdir -p "$BOOT_DIR"
 
 # Test: boot.md in .agent-loop/ is detected in dry-run banner
 mkdir -p "$BOOT_DIR/.agent-loop"
@@ -70,10 +72,10 @@ output=$("$AGENT_LOOP" --dir "$BOOT_DIR" --dry-run "$SCRIPT_DIR/minimal-tasks.md
 assert_contains "boot.md shown in banner" "$output" "boot:"
 
 # Test: no boot file = no boot line in banner
-NOBOOT_DIR=$(mktemp -d)
+NOBOOT_DIR="$TEST_TMP/noboot"
+mkdir -p "$NOBOOT_DIR"
 output=$("$AGENT_LOOP" --dir "$NOBOOT_DIR" --dry-run "$SCRIPT_DIR/minimal-tasks.md" 2>&1)
 assert_not_contains "no boot file = no boot line" "$output" "boot:"
-rm -rf "$NOBOOT_DIR"
 
 # Test: task file boot directive takes precedence
 cat > "$BOOT_DIR/tasks-with-boot.md" <<'MD'
@@ -129,7 +131,8 @@ echo "=== Error classification tests ==="
 source <(sed -n '/^classify_error()/,/^}/p' "$AGENT_LOOP")
 
 # Create temp log files with known error patterns
-CLASSIFY_DIR=$(mktemp -d)
+CLASSIFY_DIR="$TEST_TMP/classify"
+mkdir -p "$CLASSIFY_DIR"
 
 echo "Error 429 Too Many Requests" > "$CLASSIFY_DIR/rate.log"
 result=$(classify_error "$CLASSIFY_DIR/rate.log")
@@ -155,7 +158,7 @@ echo "Something went wrong" > "$CLASSIFY_DIR/unknown.log"
 result=$(classify_error "$CLASSIFY_DIR/unknown.log")
 assert_contains "generic error classified as unknown" "$result" "unknown"
 
-rm -rf "$CLASSIFY_DIR"
+# cleaned up by EXIT trap
 
 # ============================================================
 echo "=== Model failover tests ==="
@@ -175,7 +178,7 @@ assert_contains "dry-run with fallback shows model" "$output" "opus"
 echo "=== Interrupt resume tests ==="
 
 # Test: 'interrupted' status is recognized in --status output
-INT_DIR=$(mktemp -d)
+INT_DIR="$TEST_TMP/interrupt"
 mkdir -p "$INT_DIR/.agent-loop/logs"
 TASK_MD="$INT_DIR/tasks.md"
 cat > "$TASK_MD" <<'MD'
@@ -220,7 +223,7 @@ STATEJSON
 output=$("$AGENT_LOOP" --dir "$INT_DIR" --status 2>&1)
 assert_contains "status shows interrupted task" "$output" "INT"
 
-rm -rf "$INT_DIR"
+# cleaned up by EXIT trap
 
 # ============================================================
 echo "=== Context compaction tests ==="
@@ -229,7 +232,8 @@ echo "=== Context compaction tests ==="
 source <(sed -n '/^extract_token_usage()/,/^}/p' "$AGENT_LOOP")
 
 # Test: extract_token_usage parses Claude JSON output
-COMPACT_DIR=$(mktemp -d)
+COMPACT_DIR="$TEST_TMP/compact"
+mkdir -p "$COMPACT_DIR"
 cat > "$COMPACT_DIR/output.json" <<'JSON'
 {
   "type": "result",
@@ -270,7 +274,7 @@ else
     ((fail++)) || true
 fi
 
-rm -rf "$COMPACT_DIR"
+# cleaned up by EXIT trap
 
 echo ""
 echo "Results: $pass passed, $fail failed"

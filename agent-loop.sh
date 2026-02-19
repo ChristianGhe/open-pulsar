@@ -378,11 +378,11 @@ classify_error() {
     local error_tail
     error_tail=$(tail -c 3000 "$log_file" 2>/dev/null || echo "")
 
-    if echo "$error_tail" | grep -qiE '429|rate_limit|rate limit|too many requests'; then
+    if echo "$error_tail" | grep -qiE '\b429\b|rate_limit|rate limit|too many requests'; then
         echo "rate_limit"
     elif echo "$error_tail" | grep -qiE 'context_length|token limit|maximum context|context window'; then
         echo "context_overflow"
-    elif echo "$error_tail" | grep -qiE '401|authentication|unauthorized|invalid.*api.*key'; then
+    elif echo "$error_tail" | grep -qiE '\b401\b|authentication|unauthorized|invalid.*api.*key'; then
         echo "auth"
     elif echo "$error_tail" | grep -qiE 'timeout|SIGTERM|timed out|deadline exceeded'; then
         echo "timeout"
@@ -764,16 +764,20 @@ show_summary() {
     echo -e "${BOLD}  Execution Summary${NC}"
     echo "========================================="
 
-    local completed failed pending
+    local completed failed interrupted pending
     completed=$(jq '[.tasks[] | select(.status == "completed")] | length' "$STATE_FILE")
     failed=$(jq '[.tasks[] | select(.status == "failed")] | length' "$STATE_FILE")
-    pending=$(jq '[.tasks[] | select(.status == "pending")] | length' "$STATE_FILE")
+    interrupted=$(jq '[.tasks[] | select(.status == "interrupted")] | length' "$STATE_FILE")
+    pending=$((TOTAL_TASKS - completed - failed - interrupted))
 
     echo -e "  Completed: ${GREEN}$completed${NC}"
     if [[ "$failed" -gt 0 ]]; then
         echo -e "  Failed:    ${RED}$failed${NC}"
     else
         echo "  Failed:    $failed"
+    fi
+    if [[ "$interrupted" -gt 0 ]]; then
+        echo -e "  Interrupted: ${YELLOW}$interrupted${NC}"
     fi
     echo "  Pending:   $pending"
     echo "  Total:     $TOTAL_TASKS"
