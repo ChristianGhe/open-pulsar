@@ -147,6 +147,10 @@ echo "Connection timed out after 30s" > "$CLASSIFY_DIR/timeout.log"
 result=$(classify_error "$CLASSIFY_DIR/timeout.log")
 assert_contains "timeout classified as timeout" "$result" "timeout"
 
+echo "ECONNREFUSED: connection refused" > "$CLASSIFY_DIR/network.log"
+result=$(classify_error "$CLASSIFY_DIR/network.log")
+assert_contains "ECONNREFUSED classified as network" "$result" "network"
+
 echo "Something went wrong" > "$CLASSIFY_DIR/unknown.log"
 result=$(classify_error "$CLASSIFY_DIR/unknown.log")
 assert_contains "generic error classified as unknown" "$result" "unknown"

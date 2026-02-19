@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 TARGET_DIR=""
 MODEL="opus"
 FALLBACK_MODEL=""
@@ -106,14 +106,14 @@ Usage: agent-loop.sh [options] <tasks.md>
 Execute tasks from a markdown file using Claude Code CLI.
 
 Options:
-  --model <model>   Claude model to use (default: opus)
+  --model <model>       Claude model to use (default: opus)
   --fallback-model <m>  Fallback model on rate limit/timeout (optional)
-  --dir <path>      Target directory for task execution (default: current dir)
-  --dry-run         Parse and show tasks without executing
-  --reset           Clear state file and start fresh
-  --status          Show progress of current task file
-  --help            Show this help message
-  --version         Show version
+  --dir <path>          Target directory for task execution (default: current dir)
+  --dry-run             Parse and show tasks without executing
+  --reset               Clear state file and start fresh
+  --status              Show progress of current task file
+  --help                Show this help message
+  --version             Show version
 USAGE
 }
 
@@ -134,10 +134,17 @@ show_status() {
     total=$(jq '.tasks | length' "$STATE_FILE")
     completed=$(jq '[.tasks[] | select(.status == "completed")] | length' "$STATE_FILE")
     failed=$(jq '[.tasks[] | select(.status == "failed")] | length' "$STATE_FILE")
-    pending=$((total - completed - failed))
+    local interrupted
+    interrupted=$(jq '[.tasks[] | select(.status == "interrupted")] | length' "$STATE_FILE")
+    pending=$((total - completed - failed - interrupted))
 
     echo "Task file: $task_file"
-    echo "Progress: $completed/$total completed, $failed failed, $pending pending"
+    local progress="Progress: $completed/$total completed, $failed failed"
+    if [[ "$interrupted" -gt 0 ]]; then
+        progress="$progress, $interrupted interrupted"
+    fi
+    progress="$progress, $pending pending"
+    echo "$progress"
     echo ""
 
     jq -r '.tasks[] | "  [\(.status | if . == "completed" then "OK" elif . == "failed" then "FAIL" elif . == "interrupted" then "INT" else "..." end)] \(.group) > \(.task)"' "$STATE_FILE"
@@ -528,6 +535,7 @@ Respond with ONLY valid JSON, no other text:
 }
 
 _handle_interrupt() {
+    trap '' INT TERM  # Ignore further signals during cleanup
     echo ""
     echo "Interrupted. Saving context..."
 
@@ -535,7 +543,7 @@ _handle_interrupt() {
         local partial=""
         local log_path="$LOG_DIR/$_current_log_name"
         if [[ -f "$log_path" ]]; then
-            partial=$(tail -c 500 "$log_path" 2>/dev/null || echo "")
+            partial=$(jq -r '.result // empty' "$log_path" 2>/dev/null | tail -c 500 || tail -c 500 "$log_path" 2>/dev/null || echo "")
         fi
 
         # Abandon jj change for interrupted task
@@ -743,6 +751,7 @@ execute_tasks() {
             echo -e "  ${RED}FAILED after $attempt attempt(s). jj change abandoned.${NC}"
             # Break session chain
             session_id=""
+            SESSION_TOKENS=0
         fi
 
         _current_task_index=-1
