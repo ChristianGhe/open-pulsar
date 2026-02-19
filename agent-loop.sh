@@ -12,6 +12,10 @@ DO_STATUS=false
 MAX_ATTEMPTS=5
 _current_task_index=-1
 _current_log_name=""
+SESSION_TOKENS=0
+CONTEXT_WINDOW=200000
+COMPACTION_THRESHOLD=80
+COMPACTION_SUMMARY=""
 
 # Colors (disabled if not a terminal)
 if [[ -t 1 ]]; then
@@ -382,6 +386,49 @@ classify_error() {
     fi
 }
 
+extract_token_usage() {
+    local json_file="$1"
+
+    local input cache_create cache_read output context_window
+    input=$(jq -r '.usage.input_tokens // 0' "$json_file" 2>/dev/null || echo 0)
+    cache_create=$(jq -r '.usage.cache_creation_input_tokens // 0' "$json_file" 2>/dev/null || echo 0)
+    cache_read=$(jq -r '.usage.cache_read_input_tokens // 0' "$json_file" 2>/dev/null || echo 0)
+    output=$(jq -r '.usage.output_tokens // 0' "$json_file" 2>/dev/null || echo 0)
+    context_window=$(jq -r '[.modelUsage[]] | .[0].contextWindow // 200000' "$json_file" 2>/dev/null || echo 200000)
+
+    local total=$((input + cache_create + cache_read + output))
+    echo "${total}:${context_window}"
+}
+
+compact_session() {
+    local session_id="$1"
+    local model="$2"
+
+    local summary_prompt="Summarize the work completed so far in this session concisely.
+Include: files created/modified, key decisions made, current state of the task.
+Be specific about file paths and function names. Keep it under 500 words."
+
+    local claude_args=(
+        -p
+        --dangerously-skip-permissions
+        --model "$model"
+        --output-format json
+        --resume "$session_id"
+    )
+
+    local result
+    result=$(cd "$TARGET_DIR" && CLAUDECODE= claude "${claude_args[@]}" "$summary_prompt" 2>/dev/null) || true
+
+    local summary
+    summary=$(echo "$result" | jq -r '.result // empty' 2>/dev/null || echo "")
+
+    if [[ -z "$summary" ]]; then
+        summary="(compaction summary unavailable)"
+    fi
+
+    echo "$summary"
+}
+
 run_claude() {
     local task_text="$1"
     local session_id="$2"  # empty string for new session
@@ -389,8 +436,15 @@ run_claude() {
     local hint="$4"        # optional hint from retry analysis
 
     local prompt="$task_text"
+    if [[ -n "${COMPACTION_SUMMARY:-}" ]]; then
+        prompt="CONTEXT FROM PREVIOUS SESSION:
+$COMPACTION_SUMMARY
+
+NEXT TASK: $task_text"
+        COMPACTION_SUMMARY=""  # Clear after use
+    fi
     if [[ -n "$hint" ]]; then
-        prompt="$task_text
+        prompt="$prompt
 
 IMPORTANT HINT FROM PREVIOUS ATTEMPT: $hint"
     fi
@@ -421,10 +475,14 @@ IMPORTANT HINT FROM PREVIOUS ATTEMPT: $hint"
         return 1
     fi
 
-    # Extract session_id from JSON output
+    # Extract session_id and token usage from JSON output
     local new_session_id
     new_session_id=$(echo "$output" | jq -r '.session_id // empty' 2>/dev/null || echo "")
-    echo "$new_session_id"
+
+    local token_info
+    token_info=$(extract_token_usage "$LOG_DIR/$log_file")
+
+    echo "${new_session_id}:${token_info}"
     return 0
 }
 
@@ -517,6 +575,7 @@ execute_tasks() {
         if [[ "$group" != "$current_group" ]]; then
             current_group="$group"
             session_id=""
+            SESSION_TOKENS=0
         fi
 
         local log_name
@@ -571,16 +630,24 @@ execute_tasks() {
 
             echo -e "  ${BLUE}claude:${NC} running... (output -> $LOG_DIR/$log_name)"
 
-            local new_session_id
-            new_session_id=$(run_claude "$task" "$session_id" "$log_name" "$hint")
+            local claude_output
+            claude_output=$(run_claude "$task" "$session_id" "$log_name" "$hint")
             local run_exit=$?
 
-            if [[ $run_exit -eq 0 && -n "$new_session_id" ]]; then
+            if [[ $run_exit -eq 0 && -n "$claude_output" ]]; then
+                local new_session_id new_tokens new_window
+                new_session_id=$(echo "$claude_output" | cut -d: -f1)
+                new_tokens=$(echo "$claude_output" | cut -d: -f2)
+                new_window=$(echo "$claude_output" | cut -d: -f3)
+
                 session_id="$new_session_id"
+                SESSION_TOKENS=$((SESSION_TOKENS + ${new_tokens:-0}))
+                CONTEXT_WINDOW="${new_window:-200000}"
+
                 update_task_state "$i" "status" "completed"
                 update_task_state "$i" "session_id" "$session_id"
                 update_task_state "$i" "attempts" "$attempt" raw
-                echo -e "  ${GREEN}completed${NC} (session $session_id)"
+                echo -e "  ${GREEN}completed${NC} (session $session_id, ${SESSION_TOKENS} tokens used)"
                 success=true
                 break
             fi
@@ -649,6 +716,22 @@ execute_tasks() {
                 fi
             fi
         done
+
+        # Check if compaction needed after successful task
+        if $success; then
+            local ctx_window=${CONTEXT_WINDOW:-200000}
+            [[ $ctx_window -le 0 ]] && ctx_window=200000
+            local usage_pct=$((SESSION_TOKENS * 100 / ctx_window))
+            if [[ $usage_pct -ge $COMPACTION_THRESHOLD && -n "$session_id" ]]; then
+                echo -e "  ${YELLOW}compaction: context at ${usage_pct}%, summarizing session...${NC}"
+                local summary
+                summary=$(compact_session "$session_id" "$MODEL")
+                session_id=""
+                SESSION_TOKENS=0
+                COMPACTION_SUMMARY="$summary"
+                echo -e "  ${YELLOW}compaction: fresh session ready with summary${NC}"
+            fi
+        fi
 
         # Reset model after each task
         MODEL="$ORIGINAL_MODEL"

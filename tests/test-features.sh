@@ -218,6 +218,56 @@ assert_contains "status shows interrupted task" "$output" "INT"
 
 rm -rf "$INT_DIR"
 
+# ============================================================
+echo "=== Context compaction tests ==="
+
+# Source the token extraction function
+source <(sed -n '/^extract_token_usage()/,/^}/p' "$AGENT_LOOP")
+
+# Test: extract_token_usage parses Claude JSON output
+COMPACT_DIR=$(mktemp -d)
+cat > "$COMPACT_DIR/output.json" <<'JSON'
+{
+  "type": "result",
+  "session_id": "test-123",
+  "usage": {
+    "input_tokens": 1000,
+    "cache_creation_input_tokens": 500,
+    "cache_read_input_tokens": 2000,
+    "output_tokens": 300
+  },
+  "modelUsage": {
+    "claude-opus-4-6": {
+      "inputTokens": 1000,
+      "outputTokens": 300,
+      "contextWindow": 200000
+    }
+  }
+}
+JSON
+
+result=$(extract_token_usage "$COMPACT_DIR/output.json")
+tokens=$(echo "$result" | cut -d: -f1)
+window=$(echo "$result" | cut -d: -f2)
+
+if [[ "$tokens" -eq 3800 ]]; then
+    echo "  PASS: token count extracted correctly ($tokens)"
+    ((pass++)) || true
+else
+    echo "  FAIL: token count wrong (got $tokens, expected 3800)"
+    ((fail++)) || true
+fi
+
+if [[ "$window" -eq 200000 ]]; then
+    echo "  PASS: context window extracted correctly ($window)"
+    ((pass++)) || true
+else
+    echo "  FAIL: context window wrong (got $window, expected 200000)"
+    ((fail++)) || true
+fi
+
+rm -rf "$COMPACT_DIR"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
