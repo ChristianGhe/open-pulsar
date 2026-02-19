@@ -332,6 +332,26 @@ jj_abandon_change() {
     fi
 }
 
+backoff_sleep() {
+    local attempt="$1"
+    local is_rate_limit="${2:-false}"
+
+    local base=$((1 << attempt))  # 2^attempt
+    local jitter=$((RANDOM % 4))  # 0-3
+    local delay=$((base + jitter))
+
+    if [[ "$is_rate_limit" == "true" ]]; then
+        delay=$((delay * 2))
+    fi
+
+    # Cap at 60 seconds
+    if [[ $delay -gt 60 ]]; then
+        delay=60
+    fi
+
+    echo "$delay"
+}
+
 run_claude() {
     local task_text="$1"
     local session_id="$2"  # empty string for new session
@@ -473,6 +493,11 @@ execute_tasks() {
 
             if [[ $attempt -gt 1 ]]; then
                 echo -e "  ${YELLOW}retry:${NC} attempt $attempt/$MAX_ATTEMPTS"
+                # Backoff before retry
+                local wait_seconds
+                wait_seconds=$(backoff_sleep "$attempt" false)
+                echo -e "  ${YELLOW}waiting ${wait_seconds}s before retry...${NC}"
+                sleep "$wait_seconds"
                 # Abandon previous jj change and create new one
                 jj_abandon_change "$jj_change"
                 jj_change=$(jj_new_change "agent-loop: $group / $task (attempt $attempt)")

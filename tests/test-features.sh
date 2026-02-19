@@ -86,6 +86,42 @@ output=$("$AGENT_LOOP" --dir "$BOOT_DIR" --dry-run "$BOOT_DIR/tasks-with-boot.md
 assert_contains "task file boot directive shown" "$output" "boot:"
 assert_contains "task file boot uses custom path" "$output" "custom-boot.md"
 
+# ============================================================
+echo "=== Backoff function tests ==="
+
+# Source the backoff_sleep function from agent-loop.sh
+source <(sed -n '/^backoff_sleep()/,/^}/p' "$AGENT_LOOP")
+
+# Test: backoff_sleep returns a number > 0
+result=$(backoff_sleep 1 false)
+if [[ "$result" -gt 0 && "$result" -le 63 ]]; then
+    echo "  PASS: backoff_sleep attempt 1 returns valid delay ($result)"
+    ((pass++)) || true
+else
+    echo "  FAIL: backoff_sleep attempt 1 returned '$result'"
+    ((fail++)) || true
+fi
+
+# Test: backoff_sleep attempt 3 is larger than attempt 1 base
+result3=$(backoff_sleep 3 false)
+if [[ "$result3" -ge 8 ]]; then
+    echo "  PASS: backoff_sleep attempt 3 has higher base ($result3)"
+    ((pass++)) || true
+else
+    echo "  FAIL: backoff_sleep attempt 3 too low ($result3)"
+    ((fail++)) || true
+fi
+
+# Test: rate_limit doubles the delay
+result_rl=$(backoff_sleep 1 true)
+if [[ "$result_rl" -ge 4 ]]; then
+    echo "  PASS: rate_limit backoff is doubled ($result_rl)"
+    ((pass++)) || true
+else
+    echo "  FAIL: rate_limit backoff not doubled ($result_rl)"
+    ((fail++)) || true
+fi
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
