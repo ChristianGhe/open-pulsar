@@ -122,6 +122,37 @@ else
     ((fail++)) || true
 fi
 
+# ============================================================
+echo "=== Error classification tests ==="
+
+# Source the classify_error function
+source <(sed -n '/^classify_error()/,/^}/p' "$AGENT_LOOP")
+
+# Create temp log files with known error patterns
+CLASSIFY_DIR=$(mktemp -d)
+
+echo "Error 429 Too Many Requests" > "$CLASSIFY_DIR/rate.log"
+result=$(classify_error "$CLASSIFY_DIR/rate.log")
+assert_contains "429 classified as rate_limit" "$result" "rate_limit"
+
+echo "Error: context_length exceeded" > "$CLASSIFY_DIR/ctx.log"
+result=$(classify_error "$CLASSIFY_DIR/ctx.log")
+assert_contains "context_length classified as context_overflow" "$result" "context_overflow"
+
+echo "Error 401 Unauthorized" > "$CLASSIFY_DIR/auth.log"
+result=$(classify_error "$CLASSIFY_DIR/auth.log")
+assert_contains "401 classified as auth" "$result" "auth"
+
+echo "Connection timed out after 30s" > "$CLASSIFY_DIR/timeout.log"
+result=$(classify_error "$CLASSIFY_DIR/timeout.log")
+assert_contains "timeout classified as timeout" "$result" "timeout"
+
+echo "Something went wrong" > "$CLASSIFY_DIR/unknown.log"
+result=$(classify_error "$CLASSIFY_DIR/unknown.log")
+assert_contains "generic error classified as unknown" "$result" "unknown"
+
+rm -rf "$CLASSIFY_DIR"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

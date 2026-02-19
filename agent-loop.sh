@@ -352,6 +352,27 @@ backoff_sleep() {
     echo "$delay"
 }
 
+classify_error() {
+    local log_file="$1"
+
+    local error_tail
+    error_tail=$(tail -c 3000 "$log_file" 2>/dev/null || echo "")
+
+    if echo "$error_tail" | grep -qiE '429|rate_limit|rate limit|too many requests'; then
+        echo "rate_limit"
+    elif echo "$error_tail" | grep -qiE 'context_length|token limit|maximum context|context window'; then
+        echo "context_overflow"
+    elif echo "$error_tail" | grep -qiE '401|authentication|unauthorized|invalid.*api.*key'; then
+        echo "auth"
+    elif echo "$error_tail" | grep -qiE 'timeout|SIGTERM|timed out|deadline exceeded'; then
+        echo "timeout"
+    elif echo "$error_tail" | grep -qiE 'ECONNREFUSED|ENOTFOUND|DNS|network|connection refused'; then
+        echo "network"
+    else
+        echo "unknown"
+    fi
+}
+
 run_claude() {
     local task_text="$1"
     local session_id="$2"  # empty string for new session
@@ -493,11 +514,6 @@ execute_tasks() {
 
             if [[ $attempt -gt 1 ]]; then
                 echo -e "  ${YELLOW}retry:${NC} attempt $attempt/$MAX_ATTEMPTS"
-                # Backoff before retry
-                local wait_seconds
-                wait_seconds=$(backoff_sleep "$attempt" false)
-                echo -e "  ${YELLOW}waiting ${wait_seconds}s before retry...${NC}"
-                sleep "$wait_seconds"
                 # Abandon previous jj change and create new one
                 jj_abandon_change "$jj_change"
                 jj_change=$(jj_new_change "agent-loop: $group / $task (attempt $attempt)")
@@ -526,25 +542,55 @@ execute_tasks() {
 
             echo -e "  ${RED}failed${NC} on attempt $attempt"
 
-            # AI-driven retry analysis
+            # Classify the error
+            local error_class
+            error_class=$(classify_error "$LOG_DIR/$log_name")
+            echo -e "  ${YELLOW}error class:${NC} $error_class"
+
+            # Handle based on classification
+            if [[ "$error_class" == "auth" ]]; then
+                echo -e "  ${RED}Authentication error — not retryable.${NC}"
+                break
+            fi
+
+            if [[ "$error_class" == "context_overflow" ]]; then
+                echo -e "  ${YELLOW}Context overflow — starting fresh session.${NC}"
+                session_id=""
+                hint="Previous attempt hit context limit. Be more concise."
+            fi
+
             if [[ $attempt -lt $MAX_ATTEMPTS ]]; then
-                echo -e "  ${YELLOW}analyzing failure...${NC}"
-                local analysis
-                analysis=$(analyze_failure "$task" "$log_name")
-                local should_retry
-                should_retry=$(echo "$analysis" | jq -r '.retry' 2>/dev/null || echo "false")
-                local reason
-                reason=$(echo "$analysis" | jq -r '.reason' 2>/dev/null || echo "")
-                hint=$(echo "$analysis" | jq -r '.hint' 2>/dev/null || echo "")
+                local is_rate_limit=false
+                [[ "$error_class" == "rate_limit" ]] && is_rate_limit=true
 
-                echo "  analysis: $reason"
+                # Backoff before retry
+                local wait_seconds
+                wait_seconds=$(backoff_sleep "$attempt" "$is_rate_limit")
+                echo -e "  ${YELLOW}waiting ${wait_seconds}s before retry...${NC}"
+                sleep "$wait_seconds"
 
-                if [[ "$should_retry" != "true" ]]; then
-                    echo -e "  ${YELLOW}AI decided not to retry. Moving on.${NC}"
-                    break
+                if [[ "$error_class" == "unknown" ]]; then
+                    # AI-driven analysis only for unclassified errors
+                    echo -e "  ${YELLOW}analyzing failure...${NC}"
+                    local analysis
+                    analysis=$(analyze_failure "$task" "$log_name")
+                    local should_retry
+                    should_retry=$(echo "$analysis" | jq -r '.retry' 2>/dev/null || echo "false")
+                    local reason
+                    reason=$(echo "$analysis" | jq -r '.reason' 2>/dev/null || echo "")
+                    hint=$(echo "$analysis" | jq -r '.hint' 2>/dev/null || echo "")
+
+                    echo "  analysis: $reason"
+
+                    if [[ "$should_retry" != "true" ]]; then
+                        echo -e "  ${YELLOW}AI decided not to retry. Moving on.${NC}"
+                        break
+                    fi
+
+                    echo "  hint: $hint"
+                elif [[ "$error_class" == "rate_limit" || "$error_class" == "network" || "$error_class" == "timeout" ]]; then
+                    hint="Previous attempt failed with $error_class. Retrying."
                 fi
-
-                echo "  AI suggests retry with hint: $hint"
             fi
         done
 
