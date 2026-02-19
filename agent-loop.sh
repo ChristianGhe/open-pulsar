@@ -27,6 +27,43 @@ Work in the current directory. Do not ask questions — make reasonable decision
 If a task is ambiguous, interpret it in the most useful way and execute.
 Commit nothing to git/jj — the outer loop handles version control.'
 
+BOOT_FILE=""
+
+load_boot_file() {
+    local boot_path=""
+
+    # Priority 1: task file directive (<!-- boot: path -->)
+    if [[ -n "${TASK_FILE:-}" ]]; then
+        local directive
+        directive=$(grep -m1 '^<!-- boot:' "$TASK_FILE" 2>/dev/null || echo "")
+        if [[ "$directive" =~ ^\<!--\ boot:\ (.+)\ --\>$ ]]; then
+            local rel_path="${BASH_REMATCH[1]}"
+            local task_dir
+            task_dir="$(cd "$(dirname "$TASK_FILE")" && pwd)"
+            if [[ -f "$task_dir/$rel_path" ]]; then
+                boot_path="$task_dir/$rel_path"
+            elif [[ -f "$TARGET_DIR/$rel_path" ]]; then
+                boot_path="$TARGET_DIR/$rel_path"
+            fi
+        fi
+    fi
+
+    # Priority 2: .agent-loop/boot.md in target dir
+    if [[ -z "$boot_path" && -f "$TARGET_DIR/.agent-loop/boot.md" ]]; then
+        boot_path="$TARGET_DIR/.agent-loop/boot.md"
+    fi
+
+    if [[ -n "$boot_path" ]]; then
+        BOOT_FILE="$boot_path"
+        local boot_content
+        boot_content=$(cat "$boot_path")
+        SYSTEM_PROMPT="$SYSTEM_PROMPT
+
+PROJECT CONTEXT:
+$boot_content"
+    fi
+}
+
 check_dependencies() {
     if ! command -v jq &>/dev/null; then
         echo "Error: jq is required but not installed." >&2
@@ -43,6 +80,9 @@ show_banner() {
     echo -e "${BOLD}agent-loop $VERSION${NC}"
     if [[ -n "$TARGET_DIR" && "$TARGET_DIR" != "$(pwd)" ]]; then
         echo -e "  ${BLUE}target:${NC} $TARGET_DIR"
+    fi
+    if [[ -n "$BOOT_FILE" ]]; then
+        echo -e "  ${BLUE}boot:${NC} $BOOT_FILE"
     fi
     echo ""
 }
@@ -611,26 +651,27 @@ parse_args() {
 main() {
     parse_args "$@"
 
-    # Derive paths from TARGET_DIR
     TARGET_DIR="${TARGET_DIR:-$(pwd)}"
     STATE_DIR="$TARGET_DIR/.agent-loop"
     STATE_FILE="$STATE_DIR/state.json"
     LOG_DIR="$STATE_DIR/logs"
 
-    show_banner
-
     if $DO_RESET; then
+        show_banner
         reset_state
         exit 0
     fi
 
     if $DO_STATUS; then
+        show_banner
         show_status
         exit 0
     fi
 
     check_dependencies
     parse_tasks "$TASK_FILE"
+    load_boot_file
+    show_banner
 
     if $DRY_RUN; then
         show_parsed_tasks
