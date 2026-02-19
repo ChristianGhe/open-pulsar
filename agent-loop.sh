@@ -4,6 +4,8 @@ set -euo pipefail
 VERSION="0.1.0"
 TARGET_DIR=""
 MODEL="opus"
+FALLBACK_MODEL=""
+ORIGINAL_MODEL=""
 DRY_RUN=false
 DO_RESET=false
 DO_STATUS=false
@@ -84,6 +86,10 @@ show_banner() {
     if [[ -n "$BOOT_FILE" ]]; then
         echo -e "  ${BLUE}boot:${NC} $BOOT_FILE"
     fi
+    echo -e "  ${BLUE}model:${NC} $MODEL"
+    if [[ -n "$FALLBACK_MODEL" ]]; then
+        echo -e "  ${BLUE}fallback:${NC} $FALLBACK_MODEL"
+    fi
     echo ""
 }
 
@@ -95,6 +101,7 @@ Execute tasks from a markdown file using Claude Code CLI.
 
 Options:
   --model <model>   Claude model to use (default: opus)
+  --fallback-model <m>  Fallback model on rate limit/timeout (optional)
   --dir <path>      Target directory for task execution (default: current dir)
   --dry-run         Parse and show tasks without executing
   --reset           Clear state file and start fresh
@@ -569,6 +576,17 @@ execute_tasks() {
                 echo -e "  ${YELLOW}waiting ${wait_seconds}s before retry...${NC}"
                 sleep "$wait_seconds"
 
+                # Model failover for rate_limit and timeout
+                if [[ -n "$FALLBACK_MODEL" && ("$error_class" == "rate_limit" || "$error_class" == "timeout") ]]; then
+                    local old_model="$MODEL"
+                    if [[ "$MODEL" == "$ORIGINAL_MODEL" ]]; then
+                        MODEL="$FALLBACK_MODEL"
+                    else
+                        MODEL="$ORIGINAL_MODEL"
+                    fi
+                    echo -e "  ${YELLOW}failover: switching from $old_model to $MODEL${NC}"
+                fi
+
                 if [[ "$error_class" == "unknown" ]]; then
                     # AI-driven analysis only for unclassified errors
                     echo -e "  ${YELLOW}analyzing failure...${NC}"
@@ -593,6 +611,9 @@ execute_tasks() {
                 fi
             fi
         done
+
+        # Reset model after each task
+        MODEL="$ORIGINAL_MODEL"
 
         if ! $success; then
             update_task_state "$i" "status" "failed"
@@ -655,6 +676,14 @@ parse_args() {
                     exit 1
                 fi
                 MODEL="$2"
+                shift 2
+                ;;
+            --fallback-model)
+                if [[ -z "${2:-}" ]]; then
+                    echo "Error: --fallback-model requires a model name" >&2
+                    exit 1
+                fi
+                FALLBACK_MODEL="$2"
                 shift 2
                 ;;
             --dir)
@@ -721,6 +750,7 @@ parse_args() {
 
 main() {
     parse_args "$@"
+    ORIGINAL_MODEL="$MODEL"
 
     TARGET_DIR="${TARGET_DIR:-$(pwd)}"
     STATE_DIR="$TARGET_DIR/.agent-loop"

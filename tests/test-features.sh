@@ -153,6 +153,20 @@ assert_contains "generic error classified as unknown" "$result" "unknown"
 
 rm -rf "$CLASSIFY_DIR"
 
+# ============================================================
+echo "=== Model failover tests ==="
+
+# Test: --fallback-model appears in --help
+output=$("$AGENT_LOOP" --help 2>&1)
+assert_contains "--help includes --fallback-model" "$output" "--fallback-model"
+
+# Test: --fallback-model without value fails
+assert_fail "--fallback-model without value" "$AGENT_LOOP" --fallback-model
+
+# Test: --fallback-model with value + dry-run works
+output=$("$AGENT_LOOP" --model opus --fallback-model sonnet --dry-run "$SCRIPT_DIR/minimal-tasks.md" 2>&1)
+assert_contains "dry-run with fallback shows model" "$output" "opus"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
