@@ -23,6 +23,24 @@ cd agentic-loop
 chmod +x agent-loop.sh
 ```
 
+## Docker
+
+Build an image with all runtime dependencies (including Claude Code CLI):
+
+```bash
+docker build -t agent-loop .
+```
+
+Run agent-loop against your current directory:
+
+```bash
+docker run --rm -it \
+  -v "$PWD:/workspace" \
+  -w /workspace \
+  -e ANTHROPIC_API_KEY \
+  agent-loop --dry-run tasks.md
+```
+
 ## Quick Start
 
 1. **Create a `tasks.md`** describing what you want built:
