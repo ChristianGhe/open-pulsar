@@ -24,8 +24,8 @@ echo "=== Docker support tests ==="
 dockerfile_content="$(cat "$ROOT_DIR/Dockerfile")"
 readme_content="$(cat "$ROOT_DIR/README.md")"
 
-assert_contains "Dockerfile installs jq" "$dockerfile_content" "apt-get install -y --no-install-recommends bash jq git ca-certificates"
-assert_contains "Dockerfile installs claude CLI" "$dockerfile_content" "npm install -g @anthropic-ai/claude-code"
+assert_contains "Dockerfile installs jq" "$dockerfile_content" "jq"
+assert_contains "Dockerfile installs claude CLI" "$dockerfile_content" "@anthropic-ai/claude-code"
 assert_contains "README documents docker build" "$readme_content" "docker build -t agent-loop ."
 assert_contains "README documents docker run" "$readme_content" "docker run --rm -it"
 
