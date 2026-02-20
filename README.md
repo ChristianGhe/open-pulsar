@@ -31,6 +31,8 @@ Build an image with all runtime dependencies (including Claude Code CLI):
 docker build -t agent-loop .
 ```
 
+This image installs the native Claude Code CLI (`claude`) and `agent-loop` invokes that binary directly.
+
 Run agent-loop against your current directory:
 
 ```bash
