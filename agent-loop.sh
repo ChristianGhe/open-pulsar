@@ -9,6 +9,11 @@ ORIGINAL_MODEL=""
 DRY_RUN=false
 DO_RESET=false
 DO_STATUS=false
+DO_SEND_MESSAGE=false
+SEND_MESSAGE_TEXT=""
+DO_MESSAGES=false
+INBOX_FILE=""
+MESSAGES_FILE=""
 MAX_ATTEMPTS=5
 _current_task_index=-1
 _current_log_name=""
@@ -112,6 +117,8 @@ Options:
   --dry-run             Parse and show tasks without executing
   --reset               Clear state file and start fresh
   --status              Show progress of current task file
+  --send-message <msg>  Send a message/question to the running agent
+  --messages            Show message thread with agent
   --help                Show this help message
   --version             Show version
 USAGE
@@ -148,6 +155,45 @@ show_status() {
     echo ""
 
     jq -r '.tasks[] | "  [\(.status | if . == "completed" then "OK" elif . == "failed" then "FAIL" elif . == "interrupted" then "INT" else "..." end)] \(.group) > \(.task)"' "$STATE_FILE"
+}
+
+send_message_cmd() {
+    local text="$1"
+    mkdir -p "$STATE_DIR"
+    local timestamp
+    timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    # Append raw text to inbox (read by agent before next task)
+    echo "$text" >> "$INBOX_FILE"
+    # Append to persistent message history
+    jq -cn --arg role "user" --arg text "$text" --arg ts "$timestamp" \
+        '{role: $role, text: $text, timestamp: $ts}' >> "$MESSAGES_FILE"
+    echo "Message queued. The agent will see it before the next task."
+}
+
+show_messages() {
+    if [[ ! -f "$MESSAGES_FILE" ]]; then
+        echo "No messages yet."
+        return
+    fi
+    local count=0
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        local role text timestamp
+        role=$(echo "$line" | jq -r '.role // "unknown"' 2>/dev/null || echo "unknown")
+        text=$(echo "$line" | jq -r '.text // ""' 2>/dev/null || echo "")
+        timestamp=$(echo "$line" | jq -r '.timestamp // ""' 2>/dev/null || echo "")
+        if [[ "$role" == "user" ]]; then
+            echo -e "${BOLD}You${NC} ($timestamp):"
+        else
+            echo -e "${BOLD}Agent${NC} ($timestamp):"
+        fi
+        echo "  $text"
+        echo ""
+        count=$((count + 1))
+    done < "$MESSAGES_FILE"
+    if [[ $count -eq 0 ]]; then
+        echo "No messages yet."
+    fi
 }
 
 # Globals populated by parse_tasks
@@ -604,6 +650,28 @@ execute_tasks() {
             update_task_state "$i" "attempts" "0" raw
         fi
 
+        # Check inbox for pending messages from the project owner
+        if [[ -f "$INBOX_FILE" && -s "$INBOX_FILE" ]]; then
+            local inbox_content
+            inbox_content=$(cat "$INBOX_FILE")
+            > "$INBOX_FILE"  # Clear inbox after reading
+            local msg_count
+            msg_count=$(echo "$inbox_content" | grep -c . || true)
+            echo -e "  ${YELLOW}inbox:${NC} $msg_count pending message(s) from project owner"
+            local inbox_prefix="QUESTIONS FROM PROJECT OWNER (answer these as part of your task):
+$inbox_content"
+            hint="${inbox_prefix}${hint:+
+
+$hint}"
+            # Record acknowledgment in message history
+            local ts
+            ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            jq -cn --arg role "agent" \
+                --arg text "Received and incorporated into task [$((i + 1))/$TOTAL_TASKS]: $group > $task" \
+                --arg ts "$ts" \
+                '{role: $role, text: $text, timestamp: $ts}' >> "$MESSAGES_FILE"
+        fi
+
         echo ""
         echo -e "${BOLD}${BLUE}[$((i + 1))/$TOTAL_TASKS] $group > $task${NC}"
 
@@ -838,6 +906,19 @@ parse_args() {
                 DO_STATUS=true
                 shift
                 ;;
+            --send-message)
+                if [[ -z "${2:-}" ]]; then
+                    echo "Error: --send-message requires a message" >&2
+                    exit 1
+                fi
+                DO_SEND_MESSAGE=true
+                SEND_MESSAGE_TEXT="$2"
+                shift 2
+                ;;
+            --messages)
+                DO_MESSAGES=true
+                shift
+                ;;
             --help)
                 usage
                 exit 0
@@ -862,7 +943,7 @@ parse_args() {
         esac
     done
 
-    if $DO_RESET || $DO_STATUS; then
+    if $DO_RESET || $DO_STATUS || $DO_SEND_MESSAGE || $DO_MESSAGES; then
         return
     fi
 
@@ -888,6 +969,8 @@ main() {
     STATE_DIR="$TARGET_DIR/.agent-loop"
     STATE_FILE="$STATE_DIR/state.json"
     LOG_DIR="$STATE_DIR/logs"
+    INBOX_FILE="$STATE_DIR/inbox.txt"
+    MESSAGES_FILE="$STATE_DIR/messages.jsonl"
 
     if $DO_RESET; then
         show_banner
@@ -898,6 +981,16 @@ main() {
     if $DO_STATUS; then
         show_banner
         show_status
+        exit 0
+    fi
+
+    if $DO_SEND_MESSAGE; then
+        send_message_cmd "$SEND_MESSAGE_TEXT"
+        exit 0
+    fi
+
+    if $DO_MESSAGES; then
+        show_messages
         exit 0
     fi
 
