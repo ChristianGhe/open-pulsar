@@ -276,6 +276,84 @@ fi
 
 # cleaned up by EXIT trap
 
+# ============================================================
+echo "=== Messaging tests ==="
+
+MSG_DIR="$TEST_TMP/messaging"
+mkdir -p "$MSG_DIR"
+
+# Test: --help includes --send-message and --messages
+output=$("$AGENT_LOOP" --help 2>&1)
+assert_contains "--help includes --send-message" "$output" "--send-message"
+assert_contains "--help includes --messages" "$output" "--messages"
+
+# Test: --send-message without value fails
+assert_fail "--send-message without value fails" "$AGENT_LOOP" --send-message
+
+# Test: --send-message queues a message in inbox.txt and messages.jsonl
+output=$("$AGENT_LOOP" --dir "$MSG_DIR" --send-message "What is the status of the API?" 2>&1)
+assert_contains "--send-message reports queued" "$output" "Message queued"
+
+# Verify inbox.txt was created and contains the message
+if [[ -f "$MSG_DIR/.agent-loop/inbox.txt" ]]; then
+    echo "  PASS: inbox.txt created"
+    ((pass++)) || true
+else
+    echo "  FAIL: inbox.txt not created"
+    ((fail++)) || true
+fi
+
+inbox_content=$(cat "$MSG_DIR/.agent-loop/inbox.txt" 2>/dev/null || echo "")
+assert_contains "inbox.txt contains the message" "$inbox_content" "What is the status of the API?"
+
+# Verify messages.jsonl was created with correct role
+if [[ -f "$MSG_DIR/.agent-loop/messages.jsonl" ]]; then
+    echo "  PASS: messages.jsonl created"
+    ((pass++)) || true
+else
+    echo "  FAIL: messages.jsonl not created"
+    ((fail++)) || true
+fi
+
+msg_role=$(jq -r '.role' "$MSG_DIR/.agent-loop/messages.jsonl" 2>/dev/null || echo "")
+assert_contains "messages.jsonl has role=user" "$msg_role" "user"
+
+msg_text=$(jq -r '.text' "$MSG_DIR/.agent-loop/messages.jsonl" 2>/dev/null || echo "")
+assert_contains "messages.jsonl has correct text" "$msg_text" "What is the status of the API?"
+
+# Test: --messages shows message thread
+output=$("$AGENT_LOOP" --dir "$MSG_DIR" --messages 2>&1)
+assert_contains "--messages shows You label" "$output" "You"
+assert_contains "--messages shows the message text" "$output" "What is the status of the API?"
+
+# Test: --messages with no messages shows no-messages notice
+EMPTY_MSG_DIR="$TEST_TMP/empty-messaging"
+mkdir -p "$EMPTY_MSG_DIR"
+output=$("$AGENT_LOOP" --dir "$EMPTY_MSG_DIR" --messages 2>&1)
+assert_contains "--messages with no messages shows notice" "$output" "No messages"
+
+# Test: multiple messages accumulate in inbox and history
+"$AGENT_LOOP" --dir "$MSG_DIR" --send-message "Second question" >/dev/null 2>&1
+inbox_lines=$(wc -l < "$MSG_DIR/.agent-loop/inbox.txt" 2>/dev/null || echo "0")
+if [[ "$inbox_lines" -ge 2 ]]; then
+    echo "  PASS: multiple messages accumulate in inbox ($inbox_lines lines)"
+    ((pass++)) || true
+else
+    echo "  FAIL: expected 2+ inbox lines, got $inbox_lines"
+    ((fail++)) || true
+fi
+
+history_lines=$(wc -l < "$MSG_DIR/.agent-loop/messages.jsonl" 2>/dev/null || echo "0")
+if [[ "$history_lines" -ge 2 ]]; then
+    echo "  PASS: multiple messages accumulate in history ($history_lines lines)"
+    ((pass++)) || true
+else
+    echo "  FAIL: expected 2+ history lines, got $history_lines"
+    ((fail++)) || true
+fi
+
+# cleaned up by EXIT trap
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
