@@ -2,25 +2,12 @@
 __pycache__/
 *.pyc
 .agent-loop/
-!.agent-loop/instagram.json.example
 !.agent-loop/telegram.json.example
-!.agent-loop/teams.json.example
-
-# Instagram agent runtime state (sensitive — do NOT commit)
-.agent-loop/instagram-session-cache.json
-.agent-loop/instagram-sessions.json
-.agent-loop/instagram-state.json
-.agent-loop/instagram-tasks/
 
 # Telegram agent runtime state (sensitive — do NOT commit)
 .agent-loop/telegram-sessions.json
 .agent-loop/telegram-state.json
 .agent-loop/telegram-tasks/
-
-# Teams agent runtime state (sensitive — do NOT commit)
-.agent-loop/teams-sessions.json
-.agent-loop/teams-state.json
-.agent-loop/teams-tasks/
 
 # Daily agent-loop logs (runtime output — do NOT commit)
 .agent-loop/logs/agent_*.log
