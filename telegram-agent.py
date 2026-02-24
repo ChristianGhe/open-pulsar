@@ -22,7 +22,9 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 try:
@@ -49,6 +51,10 @@ AGENT_DIR = Path(".agent-loop")
 CONFIG_PATH = AGENT_DIR / "telegram.json"
 SESSIONS_PATH = AGENT_DIR / "telegram-sessions.json"
 STATE_PATH = AGENT_DIR / "telegram-state.json"
+
+_sessions_lock = threading.Lock()
+_active_tasks: dict[int, str] = {}
+_active_tasks_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -273,8 +279,8 @@ def run_claude_chat(
         return (result.stdout.strip()[:500] or "(Empty response.)", session_id or "")
 
 
-def queue_agent_loop_task(task_text: str, chat_id: int, cfg: dict) -> str:
-    """Write a one-task markdown file and invoke agent-loop.sh synchronously."""
+def _run_agent_loop_task(task_text: str, chat_id: int, cfg: dict) -> str:
+    """Write a one-task markdown file and invoke agent-loop.sh (blocking helper)."""
     task_dir = AGENT_DIR / "telegram-tasks"
     task_dir.mkdir(parents=True, exist_ok=True)
     task_file = task_dir / f"task-{chat_id}-{int(time.time())}.md"
@@ -298,6 +304,36 @@ def queue_agent_loop_task(task_text: str, chat_id: int, cfg: dict) -> str:
         return f"Task timed out (exceeded {timeout}s limit)."
 
 
+def _task_done_callback(task_text: str, chat_id: int, cfg: dict, future) -> None:
+    token = cfg["_token"]
+    try:
+        result = future.result()
+    except Exception as e:
+        result = f"Task error: {e}"
+    finally:
+        with _active_tasks_lock:
+            _active_tasks.pop(chat_id, None)
+    tg_send(token, chat_id, result)
+
+
+def queue_agent_loop_task(
+    task_text: str, chat_id: int, cfg: dict, executor: ThreadPoolExecutor,
+) -> None:
+    """Submit a task to the executor and return immediately."""
+    with _active_tasks_lock:
+        if chat_id in _active_tasks:
+            tg_send(cfg["_token"], chat_id,
+                    f"A task is already running: {_active_tasks[chat_id][:80]}")
+            return
+        _active_tasks[chat_id] = task_text
+
+    tg_send(cfg["_token"], chat_id, "Task received, working on it...")
+    future = executor.submit(_run_agent_loop_task, task_text, chat_id, cfg)
+    future.add_done_callback(
+        lambda f: _task_done_callback(task_text, chat_id, cfg, f)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Command handling
 # ---------------------------------------------------------------------------
@@ -310,9 +346,10 @@ def handle_command(text: str, chat_id: int, sessions: dict, cfg: dict) -> None:
 
     if cmd == "/reset":
         key = str(chat_id)
-        if key in sessions:
-            del sessions[key]
-            save_sessions(sessions)
+        with _sessions_lock:
+            if key in sessions:
+                del sessions[key]
+                save_sessions(sessions)
         tg_send(token, chat_id, "Session reset. Starting fresh.")
 
     elif cmd == "/mode":
@@ -323,8 +360,11 @@ def handle_command(text: str, chat_id: int, sessions: dict, cfg: dict) -> None:
             tg_send(token, chat_id, "Usage: /mode chat | /mode task")
 
     elif cmd == "/status":
+        with _active_tasks_lock:
+            task_count = len(_active_tasks)
         tg_send(token, chat_id,
             f"Active sessions: {len(sessions)}\n"
+            f"Active tasks: {task_count}\n"
             f"Mode: {cfg.get('mode', 'chat')}\n"
             f"Model: {cfg.get('model', 'sonnet')}"
         )
@@ -347,7 +387,9 @@ def handle_command(text: str, chat_id: int, sessions: dict, cfg: dict) -> None:
 # Message dispatch
 # ---------------------------------------------------------------------------
 
-def dispatch_message(msg: dict, sessions: dict, cfg: dict) -> None:
+def dispatch_message(
+    msg: dict, sessions: dict, cfg: dict, executor: ThreadPoolExecutor,
+) -> None:
     token = cfg["_token"]
     chat_id: int = msg["chat"]["id"]
     from_id: int = msg.get("from", {}).get("id", 0)
@@ -370,13 +412,12 @@ def dispatch_message(msg: dict, sessions: dict, cfg: dict) -> None:
         return
 
     if cfg.get("mode", "chat") == "task":
-        tg_send(token, chat_id, f"Running task: {text[:100]}...")
-        result = queue_agent_loop_task(text, chat_id, cfg)
-        tg_send(token, chat_id, result)
+        queue_agent_loop_task(text, chat_id, cfg, executor)
     else:
         tg_send_typing(token, chat_id)
         key = str(chat_id)
-        session_id = sessions.get(key)
+        with _sessions_lock:
+            session_id = sessions.get(key)
         system_prompt = cfg.get(
             "system_prompt",
             "You are a helpful assistant.",
@@ -385,8 +426,9 @@ def dispatch_message(msg: dict, sessions: dict, cfg: dict) -> None:
             text, session_id, cfg.get("model", "sonnet"), system_prompt
         )
         if new_session:
-            sessions[key] = new_session
-            save_sessions(sessions)
+            with _sessions_lock:
+                sessions[key] = new_session
+                save_sessions(sessions)
         tg_send(token, chat_id, reply)
 
 
@@ -423,25 +465,30 @@ def main() -> None:
 
     logging.info("Polling for messages (long-poll, timeout=30s)...")
 
-    while True:
-        try:
-            updates = tg_get_updates(token, offset, timeout=30)
-            for update in updates:
-                offset = update["update_id"] + 1
-                save_offset(offset)
-                msg = update.get("message") or update.get("edited_message")
-                if msg:
-                    try:
-                        dispatch_message(msg, sessions, cfg)
-                    except Exception as e:
-                        logging.error(f"Error dispatching message: {e}", exc_info=True)
+    executor = ThreadPoolExecutor(max_workers=4)
+    try:
+        while True:
+            try:
+                updates = tg_get_updates(token, offset, timeout=30)
+                for update in updates:
+                    offset = update["update_id"] + 1
+                    save_offset(offset)
+                    msg = update.get("message") or update.get("edited_message")
+                    if msg:
+                        try:
+                            dispatch_message(msg, sessions, cfg, executor)
+                        except Exception as e:
+                            logging.error(f"Error dispatching message: {e}", exc_info=True)
 
-        except KeyboardInterrupt:
-            logging.info("Shutting down.")
-            break
-        except Exception as e:
-            logging.error(f"Polling error: {e}", exc_info=True)
-            time.sleep(5)
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                logging.error(f"Polling error: {e}", exc_info=True)
+                time.sleep(5)
+    except KeyboardInterrupt:
+        logging.info("Shutting down.")
+    finally:
+        executor.shutdown(wait=False)
 
 
 if __name__ == "__main__":
