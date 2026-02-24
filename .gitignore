@@ -1,4 +1,6 @@
 .env
+__pycache__/
+*.pyc
 .agent-loop/
 !.agent-loop/instagram.json.example
 !.agent-loop/telegram.json.example
