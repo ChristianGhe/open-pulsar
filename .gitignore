@@ -2,6 +2,7 @@
 .agent-loop/
 !.agent-loop/instagram.json.example
 !.agent-loop/telegram.json.example
+!.agent-loop/teams.json.example
 
 # Instagram agent runtime state (sensitive — do NOT commit)
 .agent-loop/instagram-session-cache.json
@@ -13,3 +14,8 @@
 .agent-loop/telegram-sessions.json
 .agent-loop/telegram-state.json
 .agent-loop/telegram-tasks/
+
+# Teams agent runtime state (sensitive — do NOT commit)
+.agent-loop/teams-sessions.json
+.agent-loop/teams-state.json
+.agent-loop/teams-tasks/
