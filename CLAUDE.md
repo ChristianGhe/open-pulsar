@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-agent-loop is a Bash script (`agent-loop.sh`, ~820 lines) that orchestrates multi-step task execution through the Claude Code CLI. It reads task definitions from markdown files and executes them sequentially, with session management, Jujutsu VCS isolation per task, state persistence for resumable runs, and AI-driven retry logic.
+open-pulsar is a Bash script (`agent-loop.sh`, ~820 lines) that orchestrates multi-step task execution through the Claude Code CLI. It reads task definitions from markdown files and executes them sequentially, with session management, Jujutsu VCS isolation per task, state persistence for resumable runs, and AI-driven retry logic.
 
 ## Commands
 

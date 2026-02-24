@@ -1,8 +1,8 @@
-# agent-loop
+# open-pulsar
 
 **A Bash tool that executes multi-step task lists autonomously using Claude Code CLI, with per-task version control isolation via Jujutsu.**
 
-You write tasks in a markdown file, organized into groups. agent-loop feeds them to Claude one by one, tracking state in a JSON file so runs can be interrupted and resumed. It manages Claude sessions automatically — tasks within the same group share a session so context carries over, while a new group starts a fresh session for isolation. Each task's changes are isolated using Jujutsu VCS, giving you fine-grained revertability at the task level. When a task fails, AI-driven retry logic analyzes the error and decides whether to try again, injecting hints so Claude approaches the problem differently on the next attempt. The result: you describe what you want built, and agent-loop orchestrates an AI agent to build it step by step.
+You write tasks in a markdown file, organized into groups. open-pulsar feeds them to Claude one by one, tracking state in a JSON file so runs can be interrupted and resumed. It manages Claude sessions automatically — tasks within the same group share a session so context carries over, while a new group starts a fresh session for isolation. Each task's changes are isolated using Jujutsu VCS, giving you fine-grained revertability at the task level. When a task fails, AI-driven retry logic analyzes the error and decides whether to try again, injecting hints so Claude approaches the problem differently on the next attempt. The result: you describe what you want built, and open-pulsar orchestrates an AI agent to build it step by step.
 
 ## Prerequisites
 
