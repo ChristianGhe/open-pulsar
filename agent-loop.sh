@@ -493,6 +493,27 @@ IMPORTANT HINT FROM PREVIOUS ATTEMPT: $hint"
     return 0
 }
 
+write_daily_log() {
+    local status="$1"
+    local group="$2"
+    local task="$3"
+    local summary="${4:-}"
+
+    local log_file="$LOG_DIR/agent_$(date +%d%m%Y).log"
+    local timestamp
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+
+    {
+        echo "[$timestamp] $status | $group > $task"
+        if [[ -n "$summary" ]]; then
+            local short
+            short=$(echo "$summary" | tr '\n' ' ' | cut -c1-300)
+            echo "  Result: $short"
+        fi
+        echo ""
+    } >> "$log_file"
+}
+
 analyze_failure() {
     local task_text="$1"
     local log_file="$2"
@@ -616,6 +637,7 @@ execute_tasks() {
         fi
 
         update_task_state "$i" "status" "running"
+        write_daily_log "STARTED" "$group" "$task"
 
         # Attempt loop
         local attempt=0
@@ -626,6 +648,7 @@ execute_tasks() {
 
             if [[ $attempt -gt 1 ]]; then
                 echo -e "  ${YELLOW}retry:${NC} attempt $attempt/$MAX_ATTEMPTS"
+                write_daily_log "RETRIED (attempt $attempt/$MAX_ATTEMPTS)" "$group" "$task"
                 # Abandon previous jj change and create new one
                 jj_abandon_change "$jj_change"
                 jj_change=$(jj_new_change "agent-loop: $group / $task (attempt $attempt)")
@@ -656,6 +679,9 @@ execute_tasks() {
                 update_task_state "$i" "session_id" "$session_id"
                 update_task_state "$i" "attempts" "$attempt" raw
                 echo -e "  ${GREEN}completed${NC} (session $session_id, ${SESSION_TOKENS} tokens used)"
+                local daily_summary
+                daily_summary=$(jq -r '.result // ""' "$LOG_DIR/$log_name" 2>/dev/null || true)
+                write_daily_log "COMPLETED" "$group" "$task" "$daily_summary"
                 success=true
                 break
             fi
@@ -749,6 +775,7 @@ execute_tasks() {
             update_task_state "$i" "attempts" "$attempt" raw
             jj_abandon_change "$jj_change"
             echo -e "  ${RED}FAILED after $attempt attempt(s). jj change abandoned.${NC}"
+            write_daily_log "FAILED" "$group" "$task"
             # Break session chain
             session_id=""
             SESSION_TOKENS=0
