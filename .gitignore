@@ -21,3 +21,6 @@ __pycache__/
 .agent-loop/teams-sessions.json
 .agent-loop/teams-state.json
 .agent-loop/teams-tasks/
+
+# Daily agent-loop logs (runtime output — do NOT commit)
+.agent-loop/logs/agent_*.log
