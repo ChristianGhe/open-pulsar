@@ -41,6 +41,152 @@ docker run --rm -it \
   agent-loop --dry-run tasks.md
 ```
 
+## Telegram Integration (recommended)
+
+`telegram-agent.py` lets you communicate with Claude remotely via Telegram — using the official Bot API with no session management, no cookies, and no account lockouts.
+
+### Setup
+
+1. **Create a bot** — open Telegram, message `@BotFather`, send `/newbot`, follow prompts, copy the token.
+
+2. **Get your user ID** — message `@userinfobot` on Telegram, copy the numeric ID.
+
+3. **Add to `.env`:**
+
+```bash
+telegram_token=123456789:AAF-your-token-here
+telegram_allowed_ids=987654321
+```
+
+4. **Create the config:**
+
+```bash
+cp .agent-loop/telegram.json.example .agent-loop/telegram.json
+```
+
+5. **Run:**
+
+```bash
+python telegram-agent.py
+```
+
+The agent connects instantly, logs `Connected as @yourbotname`, and starts listening. Send it a message — Claude replies in seconds.
+
+### Modes
+
+| Mode | Behavior |
+|------|----------|
+| `chat` (default) | Messages go directly to Claude. Each Telegram chat maintains its own Claude session. |
+| `task` | Each message is treated as a task description, executed via `agent-loop.sh`, result sent back. |
+
+Switch with `/mode chat` or `/mode task`.
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/reset` | Clear the Claude session for this chat |
+| `/mode chat` | Switch to direct Claude chat |
+| `/mode task` | Switch to task execution via agent-loop.sh |
+| `/status` | Show current mode, model, session count |
+| `/help` | List available commands |
+
+### Configuration reference
+
+`.agent-loop/telegram.json`:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `token_env` | `telegram_token` | Env var name for the bot token |
+| `allowed_ids_env` | `telegram_allowed_ids` | Env var name for allowed user IDs (comma-separated) |
+| `mode` | `chat` | Default mode: `chat` or `task` |
+| `model` | `sonnet` | Claude model |
+| `system_prompt` | *(built-in)* | System prompt for Claude in chat mode |
+| `task_timeout_seconds` | `600` | Timeout for agent-loop.sh in task mode |
+
+---
+
+## Instagram DM Integration (optional)
+
+`instagram-agent.py` lets you communicate with Claude remotely via Instagram DMs — no backend server or webhooks required. The script polls your DMs, forwards messages to Claude, and replies with the response.
+
+### Setup
+
+1. Create a dedicated Instagram account for the agent (recommended), or use an existing one.
+
+2. Install the Python dependency:
+
+```bash
+pip install -r requirements.txt
+```
+
+3. Create the config file:
+
+```bash
+cp .agent-loop/instagram.json.example .agent-loop/instagram.json
+# Edit allowed_senders to include your own Instagram username
+```
+
+4. Set credentials as environment variables (never store them in the config):
+
+```bash
+export IG_USERNAME="the_agent_account_username"
+export IG_PASSWORD="the_agent_account_password"
+```
+
+5. Run the agent:
+
+```bash
+python instagram-agent.py
+```
+
+The agent will log in, then poll your DMs every 30 seconds (configurable). Send a DM from an account listed in `allowed_senders` and Claude will reply.
+
+### Modes
+
+| Mode | Behavior |
+|------|----------|
+| `chat` (default) | DMs are forwarded directly to Claude. Each Instagram thread maintains its own Claude session — full conversational continuity. |
+| `task` | Each DM is treated as a task description, written to a task file, and executed via `agent-loop.sh`. The result is sent back as a DM. |
+
+Switch modes mid-conversation by DMing `/mode chat` or `/mode task`. The switch is in-memory only and resets on script restart.
+
+### Slash Commands
+
+| Command | Description |
+|---------|-------------|
+| `/reset` | Clear the Claude session for this thread and start fresh |
+| `/mode chat` | Switch to direct Claude chat |
+| `/mode task` | Switch to task execution via agent-loop.sh |
+| `/status` | Show current mode, model, and active session count |
+| `/help` | List available commands |
+
+### Long Responses
+
+Instagram has a 1000-character message limit. Long Claude responses are automatically split at paragraph/sentence boundaries into labeled chunks: `[1/3]`, `[2/3]`, `[3/3]`.
+
+### Configuration Reference
+
+`.agent-loop/instagram.json` (safe to commit — no credentials stored):
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `username_env` | `IG_USERNAME` | Env var name for the Instagram username |
+| `password_env` | `IG_PASSWORD` | Env var name for the Instagram password |
+| `allowed_senders` | `[]` | Instagram usernames permitted to trigger Claude. Empty = anyone (not recommended) |
+| `mode` | `chat` | Default mode: `chat` or `task` |
+| `model` | `sonnet` | Claude model to use |
+| `system_prompt` | *(built-in)* | System prompt for Claude in chat mode |
+| `poll_interval_seconds` | `30` | Seconds between DM polls |
+| `task_timeout_seconds` | `600` | Timeout for agent-loop.sh in task mode |
+
+### Security Notes
+
+- Only accounts listed in `allowed_senders` can trigger Claude. Keep this list to yourself and trusted accounts.
+- Credentials are read from environment variables; the config file never contains passwords.
+- The session cache (`.agent-loop/instagram-session-cache.json`) contains auth tokens — it is gitignored automatically.
+- This integration uses [instagrapi](https://github.com/subzeroid/instagrapi), an **unofficial** library that works with any personal Instagram account but violates Instagram's Terms of Service. Your account may be restricted. Use a dedicated agent account at your own risk.
+
 ## Quick Start
 
 1. **Create a `tasks.md`** describing what you want built:
