@@ -6,6 +6,8 @@ TARGET_DIR=""
 MODEL="opus"
 FALLBACK_MODEL=""
 ORIGINAL_MODEL=""
+_LAST_SUCCESSFUL_MODEL=""
+ANALYSIS_MODEL="${ANALYSIS_MODEL:-haiku}"
 DRY_RUN=false
 DO_RESET=false
 DO_STATUS=false
@@ -562,7 +564,7 @@ Respond with ONLY valid JSON, no other text:
 
     local result
     result=$(CLAUDECODE= claude -p \
-        --model haiku \
+        --model "$ANALYSIS_MODEL" \
         --dangerously-skip-permissions \
         --output-format json \
         "$analysis_prompt" 2>/dev/null) || true
@@ -667,6 +669,10 @@ execute_tasks() {
             echo -e "  ${YELLOW}jj:${NC} created change $jj_change"
         fi
 
+        # Start each task with the last model that worked (avoids wasting
+        # an attempt on a primary model with a sustained rate limit)
+        MODEL="$_LAST_SUCCESSFUL_MODEL"
+
         update_task_state "$i" "status" "running"
         write_daily_log "STARTED" "$group" "$task"
 
@@ -707,6 +713,7 @@ execute_tasks() {
                 local daily_summary
                 daily_summary=$(jq -r '.result // ""' "$LOG_DIR/$log_name" 2>/dev/null || true)
                 write_daily_log "COMPLETED" "$group" "$task" "$daily_summary"
+                _LAST_SUCCESSFUL_MODEL="$MODEL"
                 success=true
                 break
             fi
@@ -791,9 +798,6 @@ execute_tasks() {
                 echo -e "  ${YELLOW}compaction: fresh session ready with summary${NC}"
             fi
         fi
-
-        # Reset model after each task
-        MODEL="$ORIGINAL_MODEL"
 
         if ! $success; then
             update_task_state "$i" "status" "failed"
@@ -935,6 +939,7 @@ parse_args() {
 main() {
     parse_args "$@"
     ORIGINAL_MODEL="$MODEL"
+    _LAST_SUCCESSFUL_MODEL="$ORIGINAL_MODEL"
 
     TARGET_DIR="${TARGET_DIR:-$(pwd)}"
     STATE_DIR="$TARGET_DIR/.agent-loop"
