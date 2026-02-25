@@ -276,6 +276,167 @@ fi
 
 # cleaned up by EXIT trap
 
+# ============================================================
+echo "=== Slugify tests ==="
+
+# Source the slugify function
+source <(sed -n '/^slugify()/,/^}/p' "$AGENT_LOOP")
+
+result=$(slugify "Hello World")
+assert_contains "Hello World -> hello-world" "$result" "hello-world"
+
+result=$(slugify "  foo---bar  ")
+assert_contains "foo---bar -> foo-bar" "$result" "foo-bar"
+
+result=$(slugify "---leading")
+assert_contains "---leading -> leading" "$result" "leading"
+# Must not have a leading dash
+assert_not_contains "---leading has no leading dash" "$result" "-leading"
+
+result=$(slugify "trailing---")
+assert_contains "trailing--- -> trailing" "$result" "trailing"
+# Must not have a trailing dash
+assert_not_contains "trailing--- has no trailing dash" "$result" "trailing-"
+
+# 60-char input truncated to ≤30 via cut -c1-30
+long_input="abcdefghij abcdefghij abcdefghij abcdefghij abcdefghij abcdefgh"  # 63 chars
+result=$(slugify "$long_input" | cut -c1-30)
+if [[ ${#result} -le 30 ]]; then
+    echo "  PASS: 60+ char input slug truncated to ≤30 (got ${#result} chars)"
+    ((pass++)) || true
+else
+    echo "  FAIL: 60+ char input slug too long (got ${#result} chars)"
+    ((fail++)) || true
+fi
+
+# ============================================================
+echo "=== write_daily_log tests ==="
+
+# Source the write_daily_log function
+source <(sed -n '/^write_daily_log()/,/^}/p' "$AGENT_LOOP")
+
+DAILYLOG_DIR="$TEST_TMP/dailylog/logs"
+mkdir -p "$DAILYLOG_DIR"
+LOG_DIR="$DAILYLOG_DIR"
+
+write_daily_log "COMPLETED" "MyGroup" "MyTask" "short result"
+
+# Assert log file uses YYYY-MM-DD format
+today=$(date +%Y-%m-%d)
+expected_log="$DAILYLOG_DIR/agent_${today}.log"
+if [[ -f "$expected_log" ]]; then
+    echo "  PASS: daily log file created with YYYY-MM-DD filename"
+    ((pass++)) || true
+else
+    echo "  FAIL: daily log file not found at $expected_log"
+    ((fail++)) || true
+fi
+
+# Assert it does NOT use DDMMYYYY format
+today_ddmmyyyy=$(date +%d%m%Y)
+wrong_log="$DAILYLOG_DIR/agent_${today_ddmmyyyy}.log"
+if [[ ! -f "$wrong_log" ]] || [[ "$expected_log" == "$wrong_log" ]]; then
+    echo "  PASS: daily log does not use DDMMYYYY format"
+    ((pass++)) || true
+else
+    echo "  FAIL: daily log uses wrong DDMMYYYY format"
+    ((fail++)) || true
+fi
+
+# Assert log entry contains group and task name
+log_content=$(cat "$expected_log")
+assert_contains "daily log contains group name" "$log_content" "MyGroup"
+assert_contains "daily log contains task name" "$log_content" "MyTask"
+
+# Test truncation: result longer than 300 chars is truncated
+long_result=$(printf 'X%.0s' $(seq 1 400))  # 400 chars of 'X'
+write_daily_log "COMPLETED" "TruncGroup" "TruncTask" "$long_result"
+log_content=$(cat "$expected_log")
+# Extract the "Result: ..." line for TruncTask
+result_line=$(grep "Result:.*XXXX" "$expected_log" | tail -1)
+# The result part after "  Result: " prefix (10 chars) should be at most 300
+result_value="${result_line#  Result: }"
+if [[ ${#result_value} -le 300 ]]; then
+    echo "  PASS: long result truncated to ≤300 chars (got ${#result_value})"
+    ((pass++)) || true
+else
+    echo "  FAIL: long result not truncated (got ${#result_value} chars, expected ≤300)"
+    ((fail++)) || true
+fi
+
+# ============================================================
+echo "=== show_status tests ==="
+
+# Source the show_status function
+source <(sed -n '/^show_status()/,/^}/p' "$AGENT_LOOP")
+
+STATUS_DIR="$TEST_TMP/statustest"
+mkdir -p "$STATUS_DIR/.agent-loop"
+STATE_FILE="$STATUS_DIR/.agent-loop/state.json"
+
+cat > "$STATE_FILE" <<'STATUSJSON'
+{
+  "task_file": "tasks.md",
+  "task_file_hash": "abc123",
+  "started_at": "2026-01-01T00:00:00Z",
+  "tasks": [
+    {
+      "index": 1,
+      "group": "Build",
+      "task": "Compile code",
+      "status": "completed",
+      "session_id": null,
+      "jj_change": null,
+      "log": "001-build--compile-code.log",
+      "attempts": 1
+    },
+    {
+      "index": 2,
+      "group": "Build",
+      "task": "Run linter",
+      "status": "failed",
+      "session_id": null,
+      "jj_change": null,
+      "log": "002-build--run-linter.log",
+      "attempts": 3
+    },
+    {
+      "index": 3,
+      "group": "Deploy",
+      "task": "Push image",
+      "status": "interrupted",
+      "session_id": null,
+      "jj_change": null,
+      "log": "003-deploy--push-image.log",
+      "attempts": 1,
+      "interrupted_at": "2026-01-01T00:05:00Z",
+      "partial_context": "pushing to registry..."
+    },
+    {
+      "index": 4,
+      "group": "Deploy",
+      "task": "Notify team",
+      "status": "running",
+      "session_id": null,
+      "jj_change": null,
+      "log": "004-deploy--notify-team.log",
+      "attempts": 1
+    }
+  ]
+}
+STATUSJSON
+
+status_output=$(show_status 2>&1)
+assert_contains "show_status contains OK" "$status_output" "OK"
+assert_contains "show_status contains FAIL" "$status_output" "FAIL"
+assert_contains "show_status contains INT" "$status_output" "INT"
+assert_contains "show_status contains RUN" "$status_output" "RUN"
+
+# Pending should be 0: total=4, completed=1, failed=1, interrupted=1, running=1
+# If running were not subtracted, pending would be 1 (wrong)
+assert_contains "show_status pending is 0" "$status_output" "0 pending"
+assert_not_contains "show_status pending is not 1" "$status_output" "1 pending"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
