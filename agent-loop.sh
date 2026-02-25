@@ -357,7 +357,7 @@ jj_new_change() {
     local output
     output=$(cd "$TARGET_DIR" && jj new -m "$message" 2>&1)
     local change_id
-    change_id=$(cd "$TARGET_DIR" && jj log -r @ --no-graph -T 'change_id.short()' 2>/dev/null || echo "unknown")
+    change_id=$(cd "$TARGET_DIR" && jj log -r @ --no-graph -T 'change_id.short()' 2>/dev/null || echo "")
     echo "$change_id"
 }
 
@@ -658,12 +658,13 @@ execute_tasks() {
         echo ""
         echo -e "${BOLD}${BLUE}[$((i + 1))/$TOTAL_TASKS] $group > $task${NC}"
 
-        # Create jj change
+        # Create jj change — persist to state immediately so the interrupt
+        # handler can abandon it if a signal arrives before task completion
         local jj_change=""
         jj_change=$(jj_new_change "agent-loop: $group / $task")
         if [[ -n "$jj_change" ]]; then
-            echo -e "  ${YELLOW}jj:${NC} created change $jj_change"
             update_task_state "$i" "jj_change" "$jj_change"
+            echo -e "  ${YELLOW}jj:${NC} created change $jj_change"
         fi
 
         update_task_state "$i" "status" "running"
@@ -963,7 +964,36 @@ main() {
     fi
 
     init_state
+
+    # SIGKILL recovery: if any tasks are stuck in "running" (the interrupt handler
+    # never ran), downgrade them to "interrupted" so the resume path picks them up.
+    local running_indices
+    running_indices=$(jq -r '.tasks | to_entries[] | select(.value.status == "running") | .key' "$STATE_FILE" 2>/dev/null || echo "")
+    if [[ -n "$running_indices" ]]; then
+        while IFS= read -r idx; do
+            local jj_change
+            jj_change=$(jq -r --argjson idx "$idx" '.tasks[$idx].jj_change // ""' "$STATE_FILE")
+            echo -e "${YELLOW}warning: task $((idx + 1)) was left in 'running' state (unclean shutdown). Marking interrupted.${NC}" >&2
+            update_task_state "$idx" "status" "interrupted"
+            # Abandon the orphaned jj change if one was recorded
+            if [[ -n "$jj_change" && "$jj_change" != "null" ]]; then
+                # Defer abandon until after ensure_jj sets JJ_AVAILABLE
+                update_task_state "$idx" "jj_change" "$jj_change"
+            fi
+        done <<< "$running_indices"
+    fi
+
     ensure_jj
+
+    # Now abandon orphaned jj changes from recovered "running" tasks
+    if [[ -n "$running_indices" ]]; then
+        while IFS= read -r idx; do
+            local jj_change
+            jj_change=$(get_task_field "$idx" "jj_change")
+            jj_abandon_change "$jj_change"
+        done <<< "$running_indices"
+    fi
+
     echo "Executing $TOTAL_TASKS tasks from $TASK_FILE (model: $MODEL)"
     execute_tasks
     show_summary
