@@ -103,6 +103,9 @@ Switch with `/mode chat` or `/mode task`.
 | `model` | `sonnet` | Claude model |
 | `system_prompt` | *(built-in)* | System prompt for Claude in chat mode |
 | `task_timeout_seconds` | `600` | Timeout for agent-loop.sh in task mode |
+| `soul_path` | `SOUL.md` | Path to a SOUL.md personality file; loaded on startup and injected into the system prompt. Leave empty to disable. |
+
+**SOUL.md** is a personality and behavioral guide for AI agents — a structured file that defines tone, values, communication style, and boundaries. When `soul_path` is set, the Telegram agent reads the file at startup and prepends it to the system prompt, giving Claude a consistent personality across conversations. Learn more at [openclawsoul.org](https://openclawsoul.org).
 
 ---
 
