@@ -437,6 +437,147 @@ assert_contains "show_status contains RUN" "$status_output" "RUN"
 assert_contains "show_status pending is 0" "$status_output" "0 pending"
 assert_not_contains "show_status pending is not 1" "$status_output" "1 pending"
 
+# ============================================================
+echo "=== parse_tasks tests ==="
+
+# Source flush_task and parse_tasks functions
+source <(sed -n '/^flush_task()/,/^}/p' "$AGENT_LOOP")
+source <(sed -n '/^parse_tasks()/,/^}/p' "$AGENT_LOOP")
+
+PARSE_DIR="$TEST_TMP/parse"
+mkdir -p "$PARSE_DIR"
+
+# --- Test 1: basic group + task assignment ---
+cat > "$PARSE_DIR/basic.md" <<'MD'
+## Setup
+- Install dependencies
+MD
+TASK_GROUPS=(); TASK_TEXTS=(); TOTAL_TASKS=0
+parse_tasks "$PARSE_DIR/basic.md"
+assert_contains "basic: group name correct" "${TASK_GROUPS[0]}" "Setup"
+assert_contains "basic: task text correct" "${TASK_TEXTS[0]}" "Install dependencies"
+if [[ "$TOTAL_TASKS" -eq 1 ]]; then
+    echo "  PASS: basic: TOTAL_TASKS=1"
+    ((pass++)) || true
+else
+    echo "  FAIL: basic: TOTAL_TASKS=$TOTAL_TASKS (expected 1)"
+    ((fail++)) || true
+fi
+
+# --- Test 2: multiline task (indented continuation joined with space) ---
+cat > "$PARSE_DIR/multiline.md" <<'MD'
+## Build
+- Compile the source code
+  with optimization flags
+  and debug symbols
+MD
+TASK_GROUPS=(); TASK_TEXTS=(); TOTAL_TASKS=0
+parse_tasks "$PARSE_DIR/multiline.md"
+assert_contains "multiline: continuation joined" "${TASK_TEXTS[0]}" "Compile the source code with optimization flags and debug symbols"
+
+# --- Test 3: tasks with no ## heading assigned to group "ungrouped" ---
+cat > "$PARSE_DIR/ungrouped.md" <<'MD'
+- First task
+- Second task
+MD
+TASK_GROUPS=(); TASK_TEXTS=(); TOTAL_TASKS=0
+parse_tasks "$PARSE_DIR/ungrouped.md"
+assert_contains "ungrouped: group is 'ungrouped'" "${TASK_GROUPS[0]}" "ungrouped"
+assert_contains "ungrouped: second task also ungrouped" "${TASK_GROUPS[1]}" "ungrouped"
+if [[ "$TOTAL_TASKS" -eq 2 ]]; then
+    echo "  PASS: ungrouped: TOTAL_TASKS=2"
+    ((pass++)) || true
+else
+    echo "  FAIL: ungrouped: TOTAL_TASKS=$TOTAL_TASKS (expected 2)"
+    ((fail++)) || true
+fi
+
+# --- Test 4: multiple groups, multiple tasks — correct group assignment ---
+cat > "$PARSE_DIR/multigroup.md" <<'MD'
+## Frontend
+- Build React app
+- Run unit tests
+
+## Backend
+- Start server
+- Run integration tests
+- Deploy to staging
+MD
+TASK_GROUPS=(); TASK_TEXTS=(); TOTAL_TASKS=0
+parse_tasks "$PARSE_DIR/multigroup.md"
+if [[ "$TOTAL_TASKS" -eq 5 ]]; then
+    echo "  PASS: multigroup: TOTAL_TASKS=5"
+    ((pass++)) || true
+else
+    echo "  FAIL: multigroup: TOTAL_TASKS=$TOTAL_TASKS (expected 5)"
+    ((fail++)) || true
+fi
+assert_contains "multigroup: task 0 group=Frontend" "${TASK_GROUPS[0]}" "Frontend"
+assert_contains "multigroup: task 1 group=Frontend" "${TASK_GROUPS[1]}" "Frontend"
+assert_contains "multigroup: task 2 group=Backend" "${TASK_GROUPS[2]}" "Backend"
+assert_contains "multigroup: task 3 group=Backend" "${TASK_GROUPS[3]}" "Backend"
+assert_contains "multigroup: task 4 group=Backend" "${TASK_GROUPS[4]}" "Backend"
+assert_contains "multigroup: task 2 text" "${TASK_TEXTS[2]}" "Start server"
+assert_contains "multigroup: task 4 text" "${TASK_TEXTS[4]}" "Deploy to staging"
+
+# --- Test 5: empty file → TOTAL_TASKS=0, no crash ---
+> "$PARSE_DIR/empty.md"
+TASK_GROUPS=(); TASK_TEXTS=(); TOTAL_TASKS=0
+parse_tasks "$PARSE_DIR/empty.md"
+if [[ "$TOTAL_TASKS" -eq 0 ]]; then
+    echo "  PASS: empty file: TOTAL_TASKS=0"
+    ((pass++)) || true
+else
+    echo "  FAIL: empty file: TOTAL_TASKS=$TOTAL_TASKS (expected 0)"
+    ((fail++)) || true
+fi
+
+# --- Test 6: file with only headings, no tasks → TOTAL_TASKS=0 ---
+cat > "$PARSE_DIR/headings-only.md" <<'MD'
+## Group A
+## Group B
+## Group C
+MD
+TASK_GROUPS=(); TASK_TEXTS=(); TOTAL_TASKS=0
+parse_tasks "$PARSE_DIR/headings-only.md"
+if [[ "$TOTAL_TASKS" -eq 0 ]]; then
+    echo "  PASS: headings only: TOTAL_TASKS=0"
+    ((pass++)) || true
+else
+    echo "  FAIL: headings only: TOTAL_TASKS=$TOTAL_TASKS (expected 0)"
+    ((fail++)) || true
+fi
+
+# --- Test 7: CRLF line endings stripped from group name and task text ---
+printf "## MyGroup\r\n- My CRLF task\r\n" > "$PARSE_DIR/crlf.md"
+TASK_GROUPS=(); TASK_TEXTS=(); TOTAL_TASKS=0
+parse_tasks "$PARSE_DIR/crlf.md"
+assert_not_contains "crlf: group has no trailing \\r" "${TASK_GROUPS[0]}" $'\r'
+assert_not_contains "crlf: task has no trailing \\r" "${TASK_TEXTS[0]}" $'\r'
+assert_contains "crlf: group name correct" "${TASK_GROUPS[0]}" "MyGroup"
+assert_contains "crlf: task text correct" "${TASK_TEXTS[0]}" "My CRLF task"
+
+# --- Test 8: task immediately followed by ## heading without blank line ---
+cat > "$PARSE_DIR/noblank.md" <<'MD'
+## First
+- Task in first group
+## Second
+- Task in second group
+MD
+TASK_GROUPS=(); TASK_TEXTS=(); TOTAL_TASKS=0
+parse_tasks "$PARSE_DIR/noblank.md"
+if [[ "$TOTAL_TASKS" -eq 2 ]]; then
+    echo "  PASS: noblank: TOTAL_TASKS=2"
+    ((pass++)) || true
+else
+    echo "  FAIL: noblank: TOTAL_TASKS=$TOTAL_TASKS (expected 2)"
+    ((fail++)) || true
+fi
+assert_contains "noblank: first task group=First" "${TASK_GROUPS[0]}" "First"
+assert_contains "noblank: first task text correct" "${TASK_TEXTS[0]}" "Task in first group"
+assert_contains "noblank: second task group=Second" "${TASK_GROUPS[1]}" "Second"
+assert_contains "noblank: second task text correct" "${TASK_TEXTS[1]}" "Task in second group"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
