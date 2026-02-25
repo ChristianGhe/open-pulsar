@@ -1,8 +1,0 @@
-{
-  "token_env": "telegram_token",
-  "allowed_ids_env": "telegram_allowed_ids",
-  "mode": "chat",
-  "model": "sonnet",
-  "system_prompt": "You are a helpful assistant.",
-  "task_timeout_seconds": 600
-}
