@@ -1,0 +1,20 @@
+{
+  "_comment_token_env": "Name of the env var holding your Telegram bot token.",
+  "token_env": "telegram_token",
+
+  "_comment_allowed_ids_env": "Name of the env var holding comma-separated allowed Telegram user IDs.",
+  "allowed_ids_env": "telegram_allowed_ids",
+
+  "model": "sonnet",
+
+  "_comment_mode": "Default mode: 'chat' for direct conversation, 'task' for agent-loop execution.",
+  "mode": "chat",
+
+  "system_prompt": "You are a helpful assistant.",
+
+  "_comment_task_timeout_seconds": "Max seconds an agent-loop task may run before being killed.",
+  "task_timeout_seconds": 600,
+
+  "_comment_soul_path": "Path to SOUL.md personality file. Set to '' to disable.",
+  "soul_path": "SOUL.md"
+}
