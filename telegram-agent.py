@@ -94,6 +94,15 @@ def load_config() -> dict:
             "anyone can trigger Claude. Set it to your Telegram user ID."
         )
 
+    # Load SOUL.md if it exists
+    soul_path = Path(cfg.get("soul_path", "SOUL.md"))
+    if soul_path.exists():
+        cfg["_soul"] = soul_path.read_text()
+        cfg["_soul_path"] = str(soul_path)
+    else:
+        cfg["_soul"] = ""
+        cfg["_soul_path"] = str(soul_path)
+
     return cfg
 
 
@@ -367,6 +376,9 @@ def _run_chat(
             session_id = sessions.get(key)
         system_prompt = cfg.get("system_prompt", "You are a helpful assistant.")
 
+        if not session_id and cfg.get("_soul"):
+            system_prompt = cfg["_soul"] + "\n\n" + system_prompt
+
         reply, new_session = run_claude_chat(
             prompt, session_id, cfg.get("model", "sonnet"), system_prompt,
         )
@@ -519,6 +531,10 @@ def main() -> None:
     logging.info("telegram-agent starting")
     logging.info(f"Mode: {cfg.get('mode', 'chat')} | Model: {cfg.get('model', 'sonnet')}")
     logging.info(f"Allowed user IDs: {cfg['_allowed_ids'] or 'ALL (no restriction!)'}")
+    if cfg["_soul"]:
+        logging.info(f"SOUL.md loaded from {cfg['_soul_path']}")
+    else:
+        logging.info(f"SOUL.md not found at {cfg['_soul_path']} — running without soul")
 
     AGENT_DIR.mkdir(exist_ok=True)
     sessions = load_sessions()
