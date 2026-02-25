@@ -17,6 +17,11 @@ CONTEXT_WINDOW=200000
 COMPACTION_THRESHOLD=80
 COMPACTION_SUMMARY=""
 
+# Return globals for run_claude (replaces colon-delimited echo protocol)
+_RUN_SESSION_ID=""
+_RUN_TOKENS=0
+_RUN_CONTEXT_WINDOW=200000
+
 # Colors (disabled if not a terminal)
 if [[ -t 1 ]]; then
     RED='\033[0;31m'
@@ -453,6 +458,11 @@ run_claude() {
     local log_file="$3"
     local hint="$4"        # optional hint from retry analysis
 
+    # Reset return globals
+    _RUN_SESSION_ID=""
+    _RUN_TOKENS=0
+    _RUN_CONTEXT_WINDOW=200000
+
     local prompt="$task_text"
     if [[ -n "${COMPACTION_SUMMARY:-}" ]]; then
         prompt="CONTEXT FROM PREVIOUS SESSION:
@@ -480,27 +490,35 @@ IMPORTANT HINT FROM PREVIOUS ATTEMPT: $hint"
         claude_args+=(--system-prompt "$SYSTEM_PROMPT")
     fi
 
-    # Run claude, capture output
-    local output
+    # Run claude, capture stdout; redirect stderr to temp file so jq gets clean JSON
+    local output stderr_file
     local exit_code=0
-    output=$(cd "$TARGET_DIR" && CLAUDECODE= claude "${claude_args[@]}" "$prompt" 2>&1) || exit_code=$?
+    stderr_file=$(mktemp)
+    output=$(cd "$TARGET_DIR" && CLAUDECODE= claude "${claude_args[@]}" "$prompt" 2>"$stderr_file") || exit_code=$?
 
-    # Save raw output to log
+    # Save raw JSON output to log
     echo "$output" > "$LOG_DIR/$log_file"
 
     if [[ $exit_code -ne 0 ]]; then
-        echo ""
+        # Append stderr to log for diagnostics, then clean up
+        if [[ -s "$stderr_file" ]]; then
+            printf '\n--- stderr ---\n' >> "$LOG_DIR/$log_file"
+            cat "$stderr_file" >> "$LOG_DIR/$log_file"
+        fi
+        rm -f "$stderr_file"
         return 1
     fi
 
-    # Extract session_id and token usage from JSON output
-    local new_session_id
-    new_session_id=$(echo "$output" | jq -r '.session_id // empty' 2>/dev/null || echo "")
+    rm -f "$stderr_file"
+
+    # Populate return globals from JSON output
+    _RUN_SESSION_ID=$(echo "$output" | jq -r '.session_id // empty' 2>/dev/null || echo "")
 
     local token_info
     token_info=$(extract_token_usage "$LOG_DIR/$log_file")
+    _RUN_TOKENS=$(echo "$token_info" | cut -d: -f1)
+    _RUN_CONTEXT_WINDOW=$(echo "$token_info" | cut -d: -f2)
 
-    echo "${new_session_id}:${token_info}"
     return 0
 }
 
@@ -673,19 +691,13 @@ execute_tasks() {
 
             echo -e "  ${BLUE}claude:${NC} running... (output -> $LOG_DIR/$log_name)"
 
-            local claude_output
-            claude_output=$(run_claude "$task" "$session_id" "$log_name" "$hint")
-            local run_exit=$?
+            local run_exit=0
+            run_claude "$task" "$session_id" "$log_name" "$hint" || run_exit=$?
 
-            if [[ $run_exit -eq 0 && -n "$claude_output" ]]; then
-                local new_session_id new_tokens new_window
-                new_session_id=$(echo "$claude_output" | cut -d: -f1)
-                new_tokens=$(echo "$claude_output" | cut -d: -f2)
-                new_window=$(echo "$claude_output" | cut -d: -f3)
-
-                session_id="$new_session_id"
-                SESSION_TOKENS=$((SESSION_TOKENS + ${new_tokens:-0}))
-                CONTEXT_WINDOW="${new_window:-200000}"
+            if [[ $run_exit -eq 0 ]]; then
+                session_id="$_RUN_SESSION_ID"
+                SESSION_TOKENS=$((SESSION_TOKENS + _RUN_TOKENS))
+                CONTEXT_WINDOW="${_RUN_CONTEXT_WINDOW:-200000}"
 
                 update_task_state "$i" "status" "completed"
                 update_task_state "$i" "session_id" "$session_id"
