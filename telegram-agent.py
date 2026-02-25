@@ -486,7 +486,8 @@ def handle_command(text: str, chat_id: int, sessions: dict, cfg: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def dispatch_message(
-    msg: dict, sessions: dict, cfg: dict, executor: ThreadPoolExecutor,
+    msg: dict, sessions: dict, cfg: dict,
+    chat_executor: ThreadPoolExecutor, task_executor: ThreadPoolExecutor,
 ) -> None:
     token = cfg["_token"]
     chat_id: int = msg["chat"]["id"]
@@ -510,9 +511,9 @@ def dispatch_message(
         return
 
     if cfg.get("mode", "chat") == "task":
-        queue_agent_loop_task(text, chat_id, cfg, executor)
+        queue_agent_loop_task(text, chat_id, cfg, task_executor)
     else:
-        queue_chat(text, chat_id, sessions, cfg, executor)
+        queue_chat(text, chat_id, sessions, cfg, chat_executor)
 
 
 # ---------------------------------------------------------------------------
@@ -552,7 +553,9 @@ def main() -> None:
 
     logging.info("Polling for messages (long-poll, timeout=30s)...")
 
-    executor = ThreadPoolExecutor(max_workers=4)
+    # Separate executors so long-running tasks can never starve chat messages.
+    chat_executor = ThreadPoolExecutor(max_workers=4)
+    task_executor = ThreadPoolExecutor(max_workers=2)
     try:
         while True:
             try:
@@ -563,7 +566,8 @@ def main() -> None:
                     msg = update.get("message") or update.get("edited_message")
                     if msg:
                         try:
-                            dispatch_message(msg, sessions, cfg, executor)
+                            dispatch_message(msg, sessions, cfg,
+                                             chat_executor, task_executor)
                         except Exception as e:
                             logging.error(f"Error dispatching message: {e}", exc_info=True)
 
@@ -575,7 +579,8 @@ def main() -> None:
     except KeyboardInterrupt:
         logging.info("Shutting down.")
     finally:
-        executor.shutdown(wait=False)
+        chat_executor.shutdown(wait=False)
+        task_executor.shutdown(wait=False)
 
 
 if __name__ == "__main__":
