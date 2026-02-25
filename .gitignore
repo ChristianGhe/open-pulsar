@@ -1,13 +1,5 @@
 .env
 __pycache__/
 *.pyc
-.agent-loop/
+.agent-loop/*
 !.agent-loop/telegram.json.example
-
-# Telegram agent runtime state (sensitive — do NOT commit)
-.agent-loop/telegram-sessions.json
-.agent-loop/telegram-state.json
-.agent-loop/telegram-tasks/
-
-# Daily agent-loop logs (runtime output — do NOT commit)
-.agent-loop/logs/agent_*.log
