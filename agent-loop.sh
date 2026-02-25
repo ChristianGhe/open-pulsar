@@ -133,17 +133,21 @@ show_status() {
         exit 0
     fi
 
-    local task_file total completed failed pending
+    local task_file total completed failed pending running
     task_file=$(jq -r '.task_file' "$STATE_FILE")
     total=$(jq '.tasks | length' "$STATE_FILE")
     completed=$(jq '[.tasks[] | select(.status == "completed")] | length' "$STATE_FILE")
     failed=$(jq '[.tasks[] | select(.status == "failed")] | length' "$STATE_FILE")
     local interrupted
     interrupted=$(jq '[.tasks[] | select(.status == "interrupted")] | length' "$STATE_FILE")
-    pending=$((total - completed - failed - interrupted))
+    running=$(jq '[.tasks[] | select(.status == "running")] | length' "$STATE_FILE")
+    pending=$((total - completed - failed - interrupted - running))
 
     echo "Task file: $task_file"
     local progress="Progress: $completed/$total completed, $failed failed"
+    if [[ "$running" -gt 0 ]]; then
+        progress="$progress, $running running"
+    fi
     if [[ "$interrupted" -gt 0 ]]; then
         progress="$progress, $interrupted interrupted"
     fi
@@ -151,7 +155,7 @@ show_status() {
     echo "$progress"
     echo ""
 
-    jq -r '.tasks[] | "  [\(.status | if . == "completed" then "OK" elif . == "failed" then "FAIL" elif . == "interrupted" then "INT" else "..." end)] \(.group) > \(.task)"' "$STATE_FILE"
+    jq -r '.tasks[] | "  [\(.status | if . == "completed" then "OK" elif . == "failed" then "FAIL" elif . == "interrupted" then "INT" elif . == "running" then "RUN" else "..." end)] \(.group) > \(.task)"' "$STATE_FILE"
 }
 
 # Globals populated by parse_tasks
@@ -612,6 +616,7 @@ execute_tasks() {
             current_group="$group"
             session_id=""
             SESSION_TOKENS=0
+            COMPACTION_SUMMARY=""
         fi
 
         local log_name
