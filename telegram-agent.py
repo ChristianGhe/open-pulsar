@@ -56,6 +56,9 @@ _sessions_lock = threading.Lock()
 _active_tasks: dict[int, str] = {}
 _active_tasks_lock = threading.Lock()
 
+_active_chats: dict[int, bool] = {}
+_active_chats_lock = threading.Lock()
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -335,6 +338,89 @@ def queue_agent_loop_task(
 
 
 # ---------------------------------------------------------------------------
+# Async chat (non-blocking wrapper around run_claude_chat)
+# ---------------------------------------------------------------------------
+
+def _send_typing_loop(token: str, chat_id: int, stop_event: threading.Event) -> None:
+    """Resend the 'typing…' indicator every 4 s until *stop_event* is set."""
+    while not stop_event.wait(timeout=4):
+        tg_send_typing(token, chat_id)
+
+
+def _run_chat(
+    prompt: str, chat_id: int, sessions: dict, cfg: dict,
+) -> None:
+    """Run a single Claude chat turn (called inside a worker thread)."""
+    token = cfg["_token"]
+    key = str(chat_id)
+
+    # Keep the typing bubble alive for the full duration of the Claude call.
+    stop_typing = threading.Event()
+    tg_send_typing(token, chat_id)
+    typing_thread = threading.Thread(
+        target=_send_typing_loop, args=(token, chat_id, stop_typing), daemon=True,
+    )
+    typing_thread.start()
+
+    try:
+        with _sessions_lock:
+            session_id = sessions.get(key)
+        system_prompt = cfg.get("system_prompt", "You are a helpful assistant.")
+
+        reply, new_session = run_claude_chat(
+            prompt, session_id, cfg.get("model", "sonnet"), system_prompt,
+        )
+
+        if new_session:
+            with _sessions_lock:
+                sessions[key] = new_session
+                save_sessions(sessions)
+
+        tg_send(token, chat_id, reply)
+    finally:
+        stop_typing.set()
+        typing_thread.join(timeout=5)
+
+
+def _chat_done_callback(chat_id: int, cfg: dict, future) -> None:
+    """Clean up active-chat tracking; surface unexpected errors."""
+    try:
+        future.result()
+    except Exception as e:
+        logging.error(f"Chat error for {chat_id}: {e}", exc_info=True)
+        try:
+            tg_send(cfg["_token"], chat_id, "(Chat error — check agent logs.)")
+        except Exception:
+            pass
+    finally:
+        with _active_chats_lock:
+            _active_chats.pop(chat_id, None)
+
+
+def queue_chat(
+    prompt: str,
+    chat_id: int,
+    sessions: dict,
+    cfg: dict,
+    executor: ThreadPoolExecutor,
+) -> None:
+    """Submit a chat turn to the thread-pool and return immediately."""
+    with _active_chats_lock:
+        if chat_id in _active_chats:
+            tg_send(
+                cfg["_token"], chat_id,
+                "Still thinking about your previous message…",
+            )
+            return
+        _active_chats[chat_id] = True
+
+    future = executor.submit(_run_chat, prompt, chat_id, sessions, cfg)
+    future.add_done_callback(
+        lambda f: _chat_done_callback(chat_id, cfg, f)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Command handling
 # ---------------------------------------------------------------------------
 
@@ -414,22 +500,7 @@ def dispatch_message(
     if cfg.get("mode", "chat") == "task":
         queue_agent_loop_task(text, chat_id, cfg, executor)
     else:
-        tg_send_typing(token, chat_id)
-        key = str(chat_id)
-        with _sessions_lock:
-            session_id = sessions.get(key)
-        system_prompt = cfg.get(
-            "system_prompt",
-            "You are a helpful assistant.",
-        )
-        reply, new_session = run_claude_chat(
-            text, session_id, cfg.get("model", "sonnet"), system_prompt
-        )
-        if new_session:
-            with _sessions_lock:
-                sessions[key] = new_session
-                save_sessions(sessions)
-        tg_send(token, chat_id, reply)
+        queue_chat(text, chat_id, sessions, cfg, executor)
 
 
 # ---------------------------------------------------------------------------
