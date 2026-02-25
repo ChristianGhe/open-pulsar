@@ -82,6 +82,10 @@ check_dependencies() {
         echo "Error: claude CLI is required but not installed." >&2
         exit 1
     fi
+    if ! command -v sha256sum &>/dev/null; then
+        echo "Error: sha256sum is required (macOS: brew install coreutils)" >&2
+        exit 1
+    fi
 }
 
 show_banner() {
@@ -163,8 +167,8 @@ flush_task() {
         TASK_TEXTS+=("$current_task")
         TOTAL_TASKS=$((TOTAL_TASKS + 1))
         current_task=""
-        in_multiline=false
     fi
+    in_multiline=false
 }
 
 parse_tasks() {
@@ -178,6 +182,9 @@ parse_tasks() {
     TOTAL_TASKS=0
 
     while IFS= read -r line || [[ -n "$line" ]]; do
+        # Strip Windows carriage returns
+        line="${line%$'\r'}"
+
         # Group heading
         if [[ "$line" =~ ^##[[:space:]]+(.+)$ ]]; then
             flush_task
@@ -249,7 +256,7 @@ init_state() {
         local group="${TASK_GROUPS[$i]}"
         local task="${TASK_TEXTS[$i]}"
         local group_slug
-        group_slug=$(slugify "$group")
+        group_slug=$(slugify "$group" | cut -c1-30)
         local task_slug
         task_slug=$(slugify "$task" | cut -c1-50)
         local log_name
@@ -499,7 +506,7 @@ write_daily_log() {
     local task="$3"
     local summary="${4:-}"
 
-    local log_file="$LOG_DIR/agent_$(date +%d%m%Y).log"
+    local log_file="$LOG_DIR/agent_$(date +%Y-%m-%d).log"
     local timestamp
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
 
