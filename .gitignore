@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 .agent-loop/*
 !.agent-loop/telegram.json.example
+*-tasks.md
+!tests/*-tasks.md
+*.research.md
+msft-research/
+tasks/
