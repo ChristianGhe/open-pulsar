@@ -62,6 +62,33 @@ Everything lives in `agent-loop.sh`. The script is organized into these sections
 - `logs/NNN-group-slug--task-slug.log` — full Claude JSON output per task
 - `boot.md` (optional) — project context appended to the system prompt for every task
 
+## Additional Components
+
+### `telegram-agent.py` + `requirements.txt`
+
+A Python bot that exposes open-pulsar over Telegram. It long-polls the Telegram Bot API (no webhook required) and operates in three modes, switchable per-chat with `/mode`:
+
+- **auto mode** (default) — uses Haiku to classify each message as chat or task and routes accordingly
+- **chat mode** — forwards messages directly to `claude -p`, maintaining a per-chat session via `--resume`; SOUL.md content is prepended to the system prompt on session start
+- **task mode** — writes the incoming message as a one-task markdown file and invokes `agent-loop.sh`, then replies with the result; supports `--soul-path` passthrough and reports soul evolution events
+
+Bot commands: `/reset` (clear session), `/mode auto|chat|task`, `/status`, `/soul show|append|set`, `/help`.
+
+**Config**: `.agent-loop/telegram.json` (copy from `.agent-loop/telegram.json.example`); token and allowed user IDs are read from a `.env` file via `python-dotenv`.
+
+**Runtime files** (all under `.agent-loop/`):
+- `telegram.json` — config (model, task_model, mode, system prompt, soul path, timeout)
+- `telegram-sessions.json` — per-chat Claude session IDs (persisted across restarts)
+- `telegram-state.json` — Telegram update offset (prevents reprocessing messages on restart)
+- `telegram-tasks/` — ephemeral one-task markdown files written in task mode
+
+**Dependencies** (`requirements.txt`): `requests>=2.31.0`, `python-dotenv>=1.0.0`.
+
+```bash
+pip install -r requirements.txt
+python telegram-agent.py
+```
+
 ## Dependencies
 
 - bash 4+, jq, claude CLI (required)

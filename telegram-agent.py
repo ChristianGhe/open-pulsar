@@ -291,6 +291,35 @@ def run_claude_chat(
         return (result.stdout.strip()[:500] or "(Empty response.)", session_id or "")
 
 
+def classify_message(text: str) -> str:
+    """Ask Haiku whether a message needs the agent loop. Returns 'task' or 'chat'."""
+    prompt = (
+        "You are a routing classifier for a coding assistant bot.\n"
+        "Does this message require making changes to code, editing files, running scripts, "
+        "executing commands, or any other concrete action in a codebase?\n\n"
+        f"Message: {text}\n\n"
+        "Reply with exactly one word: task or chat"
+    )
+    cmd = [
+        "claude", "-p",
+        "--dangerously-skip-permissions",
+        "--output-format", "json",
+        "--model", "haiku",
+        prompt,
+    ]
+    try:
+        env = {**os.environ, "CLAUDECODE": ""}
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            reply = data.get("result", "").strip().lower()
+            if reply.startswith("task"):
+                return "task"
+    except Exception as e:
+        logging.warning(f"classify_message failed: {e}")
+    return "chat"
+
+
 def _run_agent_loop_task(task_text: str, chat_id: int, cfg: dict) -> str:
     """Write a one-task markdown file and invoke agent-loop.sh (blocking helper)."""
     task_dir = AGENT_DIR / "telegram-tasks"
@@ -306,7 +335,7 @@ def _run_agent_loop_task(task_text: str, chat_id: int, cfg: dict) -> str:
     try:
         env = {**os.environ, "CLAUDECODE": ""}
         result = subprocess.run(
-            [str(agent_loop), "--model", cfg.get("model", "opus"), str(task_file)],
+            [str(agent_loop), "--model", cfg.get("task_model", "opus"), str(task_file)],
             capture_output=True, text=True, timeout=timeout, env=env,
         )
         if result.returncode == 0:
@@ -328,6 +357,20 @@ def _task_done_callback(task_text: str, chat_id: int, cfg: dict, future) -> None
     tg_send(token, chat_id, result)
 
 
+def _classify_and_route(
+    text: str, chat_id: int, sessions: dict, cfg: dict,
+    chat_executor: ThreadPoolExecutor, task_executor: ThreadPoolExecutor,
+) -> None:
+    """Classify a message and route to chat or agent loop (runs in a classifier thread)."""
+    tg_send_typing(cfg["_token"], chat_id)
+    msg_type = classify_message(text)
+    logging.info(f"Classified '{text[:60]}' as {msg_type}")
+    if msg_type == "task":
+        queue_agent_loop_task(text, chat_id, cfg, task_executor)
+    else:
+        queue_chat(text, chat_id, sessions, cfg, chat_executor)
+
+
 def queue_agent_loop_task(
     task_text: str, chat_id: int, cfg: dict, executor: ThreadPoolExecutor,
 ) -> None:
@@ -335,11 +378,12 @@ def queue_agent_loop_task(
     with _active_tasks_lock:
         if chat_id in _active_tasks:
             tg_send(cfg["_token"], chat_id,
-                    f"A task is already running: {_active_tasks[chat_id][:80]}")
+                    "A task is already running. I'll let you know when it's done. "
+                    "You can still chat with me in the meantime.")
             return
         _active_tasks[chat_id] = task_text
 
-    tg_send(cfg["_token"], chat_id, "Task received, working on it...")
+    tg_send(cfg["_token"], chat_id, "Agent loop started. I'll reply when it's done.")
     future = executor.submit(_run_agent_loop_task, task_text, chat_id, cfg)
     future.add_done_callback(
         lambda f: _task_done_callback(task_text, chat_id, cfg, f)
@@ -451,30 +495,36 @@ def handle_command(text: str, chat_id: int, sessions: dict, cfg: dict) -> None:
         tg_send(token, chat_id, "Session reset. Starting fresh.")
 
     elif cmd == "/mode":
-        if args in ("chat", "task"):
+        if args in ("auto", "chat", "task"):
             cfg["mode"] = args
             tg_send(token, chat_id, f"Switched to {args} mode.")
         else:
-            tg_send(token, chat_id, "Usage: /mode chat | /mode task")
+            tg_send(token, chat_id, "Usage: /mode auto | /mode chat | /mode task")
 
     elif cmd == "/status":
         with _active_tasks_lock:
-            task_count = len(_active_tasks)
-        tg_send(token, chat_id,
-            f"Active sessions: {len(sessions)}\n"
-            f"Active tasks: {task_count}\n"
-            f"Mode: {cfg.get('mode', 'chat')}\n"
-            f"Model: {cfg.get('model', 'sonnet')}"
-        )
+            running = list(_active_tasks.values())
+        lines = [
+            f"Mode: {cfg.get('mode', 'auto')}",
+            f"Model: {cfg.get('model', 'sonnet')}",
+            f"Active chat sessions: {len(sessions)}",
+        ]
+        if running:
+            for i, t in enumerate(running, 1):
+                lines.append(f"Running task {i}: {t[:80]}")
+        else:
+            lines.append("No task running.")
+        tg_send(token, chat_id, "\n".join(lines))
 
     elif cmd == "/help":
         tg_send(token, chat_id,
             "/reset — clear this conversation and start fresh\n"
-            "/mode chat — direct conversation with Claude\n"
-            "/mode task — execute via agent-loop.sh\n"
-            "/status — show current mode and session count\n"
+            "/mode auto — auto-detect chat vs agent loop (default)\n"
+            "/mode chat — force direct conversation with Claude\n"
+            "/mode task — force all messages through agent-loop.sh\n"
+            "/status — show current mode, model, and task state\n"
             "/help — show this message\n\n"
-            "Anything else is forwarded to Claude."
+            "Anything else is routed automatically."
         )
 
     else:
@@ -488,8 +538,8 @@ def handle_command(text: str, chat_id: int, sessions: dict, cfg: dict) -> None:
 def dispatch_message(
     msg: dict, sessions: dict, cfg: dict,
     chat_executor: ThreadPoolExecutor, task_executor: ThreadPoolExecutor,
+    classify_executor: ThreadPoolExecutor,
 ) -> None:
-    token = cfg["_token"]
     chat_id: int = msg["chat"]["id"]
     from_id: int = msg.get("from", {}).get("id", 0)
     text: str = (msg.get("text") or "").strip()
@@ -510,10 +560,16 @@ def dispatch_message(
         handle_command(text, chat_id, sessions, cfg)
         return
 
-    if cfg.get("mode", "chat") == "task":
+    mode = cfg.get("mode", "auto")
+    if mode == "task":
         queue_agent_loop_task(text, chat_id, cfg, task_executor)
-    else:
+    elif mode == "chat":
         queue_chat(text, chat_id, sessions, cfg, chat_executor)
+    else:  # auto
+        classify_executor.submit(
+            _classify_and_route, text, chat_id, sessions, cfg,
+            chat_executor, task_executor,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -530,7 +586,7 @@ def main() -> None:
     token = cfg["_token"]
 
     logging.info("telegram-agent starting")
-    logging.info(f"Mode: {cfg.get('mode', 'chat')} | Model: {cfg.get('model', 'sonnet')}")
+    logging.info(f"Mode: {cfg.get('mode', 'auto')} | Model: {cfg.get('model', 'sonnet')}")
     logging.info(f"Allowed user IDs: {cfg['_allowed_ids'] or 'ALL (no restriction!)'}")
     if cfg["_soul"]:
         logging.info(f"SOUL.md loaded from {cfg['_soul_path']}")
@@ -554,8 +610,10 @@ def main() -> None:
     logging.info("Polling for messages (long-poll, timeout=30s)...")
 
     # Separate executors so long-running tasks can never starve chat messages.
+    # classify_executor runs Haiku classification before routing in auto mode.
     chat_executor = ThreadPoolExecutor(max_workers=4)
     task_executor = ThreadPoolExecutor(max_workers=2)
+    classify_executor = ThreadPoolExecutor(max_workers=2)
     try:
         while True:
             try:
@@ -567,7 +625,8 @@ def main() -> None:
                     if msg:
                         try:
                             dispatch_message(msg, sessions, cfg,
-                                             chat_executor, task_executor)
+                                             chat_executor, task_executor,
+                                             classify_executor)
                         except Exception as e:
                             logging.error(f"Error dispatching message: {e}", exc_info=True)
 
@@ -581,6 +640,7 @@ def main() -> None:
     finally:
         chat_executor.shutdown(wait=False)
         task_executor.shutdown(wait=False)
+        classify_executor.shutdown(wait=False)
 
 
 if __name__ == "__main__":
