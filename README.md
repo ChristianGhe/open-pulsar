@@ -107,6 +107,29 @@ Switch with `/mode chat` or `/mode task`.
 
 **SOUL.md** is a personality and behavioral guide for AI agents — a structured file that defines tone, values, communication style, and boundaries. When `soul_path` is set, the Telegram agent reads the file at startup and prepends it to the system prompt, giving Claude a consistent personality across conversations. Learn more at [openclawsoul.org](https://openclawsoul.org).
 
+### Running as a systemd service
+
+To keep the Telegram agent running in the background (and auto-restart on failure or reboot), install it as a systemd service:
+
+```bash
+./install-service.sh            # install as a user service (no sudo)
+./install-service.sh --system   # install as a system service (needs sudo)
+```
+
+The script auto-detects your user, Python path, and project directory, validates that config and credentials exist, then generates and installs the unit file.
+
+```bash
+./install-service.sh --status     # check service status
+./install-service.sh --uninstall  # stop, disable, and remove
+```
+
+Logs go to the journal:
+
+```bash
+journalctl --user -u open-pulsar-telegram -f    # user service
+journalctl -u open-pulsar-telegram -f            # system service
+```
+
 ---
 
 ## Quick Start
