@@ -1,9 +1,0 @@
-## SOUL.md Integration
-
-- Create `SOUL.md` in the project root following the openclawsoul.org format. Include these sections: a front-matter block with `name`, `version`, and `enabled` fields; **Identity** — who the agent is and its core self-perception; **Communication Style** — how it speaks (concise, direct, no filler, has opinions); **Values** — what it prioritises; **Boundaries** — what it will not do; **Vibe** — the overall feel. Keep it generic enough to be a useful default but specific enough to replace "generic corporate chatbot". The preamble should echo the openclaw philosophy: "You're not a chatbot. You're becoming someone."
-
-- Read `telegram-agent.py` in full. Then modify it to load `SOUL.md` if it exists: in `load_config`, after the existing config keys are loaded, check for a `soul_path` key (default `"SOUL.md"`). If the file at that path exists, read its contents and store them in `cfg["_soul"]`; otherwise set `cfg["_soul"]` to `""`. In `_run_chat`, if `cfg["_soul"]` is non-empty and there is no existing session, prepend the soul content to the system_prompt string (soul first, then a blank line, then the system_prompt from config). Log on startup whether SOUL.md was loaded and from which path.
-
-- Update `.agent-loop/telegram.json.example` to add `"soul_path": "SOUL.md"` as a new key with a comment-style note in the surrounding JSON (use a `_comment_soul_path` key immediately before it with value `"Path to SOUL.md personality file. Set to '' to disable."`).
-
-- In `README.md`, add a row for `soul_path` to the configuration reference table under the Telegram Integration section: default `"SOUL.md"`, description `"Path to a SOUL.md personality file; loaded on startup and injected into the system prompt. Leave empty to disable."`. Also add a short paragraph after the configuration table explaining what SOUL.md is and linking to openclawsoul.org.
